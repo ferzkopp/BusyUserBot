@@ -1,0 +1,18 @@
+# Build artefacts
+[Bb]in/
+[Oo]bj/
+*.user
+
+# .NET tooling
+.vs/
+*.suo
+
+# Python
+__pycache__/
+*.pyc
+
+# Local secrets (firmware)
+firmware/BusyUserBot/secrets.h
+
+# Local user settings (controller writes to %APPDATA%, but just in case)
+controller/src/BusyUserBot/appsettings.json
