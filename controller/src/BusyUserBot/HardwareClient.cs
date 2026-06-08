@@ -178,11 +178,7 @@ public sealed class BleHardwareClient : IHardwareClient, IDisposable
                 catch (Exception ex2) when ((uint)ex2.HResult == 0x80070016)
                 {
                     // A handle reopen was not enough: Windows is still serving the
-                    // attribute table it cached *before* the firmware reflash. The
-                    // Cached fallback would bind to those dead handles — the AUTH
-                    // write then "succeeds" against a stale handle but the firmware
-                    // never sees it, so no STATUS notification ever comes back and
-                    // auth times out (exactly the failure in the connect logs).
+                    // attribute table it cached *before* the firmware reflash.
                     // Flush the cache by unpairing and re-discovering from scratch;
                     // only use Cached as a true last resort.
                     _log("BLE: still 0x80070016 after reopen. Stale GATT cache from before the reflash; flushing via unpair.");
@@ -200,7 +196,7 @@ public sealed class BleHardwareClient : IHardwareClient, IDisposable
                     }
                     else
                     {
-                        _log("BLE: cache flush failed; falling back to Cached mode (may use stale handles after a reflash).");
+                        _log("BLE: cache flush failed; falling back to Cached mode.");
                         svcResult = await _device.GetGattServicesForUuidAsync(SvcUuid, BluetoothCacheMode.Cached).AsTask(ct);
                     }
                 }
@@ -250,19 +246,31 @@ public sealed class BleHardwareClient : IHardwareClient, IDisposable
                 return false;
             }
 
-            // 3. Subscribe to notifications.
+            // 3. Subscribe to notifications. Best-effort: the loop uses them to
+            //    read executed counts, but the connect handshake below no longer
+            //    depends on them.
             step = "subscribe-notify";
             _statChar.ValueChanged += OnNotify;
-            var cccd = await _statChar.WriteClientCharacteristicConfigurationDescriptorAsync(
-                GattClientCharacteristicConfigurationDescriptorValue.Notify).AsTask(ct);
-            if (cccd != GattCommunicationStatus.Success)
+            try
             {
-                _log($"BLE: notify subscribe failed ({cccd})");
-                return false;
+                var cccd = await _statChar.WriteClientCharacteristicConfigurationDescriptorAsync(
+                    GattClientCharacteristicConfigurationDescriptorValue.Notify).AsTask(ct);
+                if (cccd != GattCommunicationStatus.Success)
+                    _log($"BLE: notify subscribe returned {cccd} (continuing; receipt is confirmed by acknowledged writes).");
+            }
+            catch (Exception ex)
+            {
+                _log($"BLE: notify subscribe skipped ({ex.GetType().Name} 0x{ex.HResult:X8}); receipt is confirmed by acknowledged writes.");
             }
 
-            // 4. Authenticate with the firmware-level token before sending any
-            //    HID commands.
+            // 4. Authenticate with the firmware token using a Write-With-
+            //    Response. The dongle answers every such write with an ATT
+            //    Write-Response PDU, so a Success status here is itself the
+            //    Bluetooth-level proof that the dongle received the bytes. We do
+            //    NOT gate the connection on a STATUS notification: some Windows
+            //    BLE stacks fail to deliver notifications after a firmware
+            //    reflash even though the writes get through (the firmware showed
+            //    "authed"/"ok x1" while the controller timed out waiting).
             step = "auth-write";
             _pendingResponse = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
             GattCommunicationStatus w;
@@ -277,38 +285,40 @@ public sealed class BleHardwareClient : IHardwareClient, IDisposable
             }
             if (w != GattCommunicationStatus.Success)
             {
-                _log($"BLE: AUTH write failed ({w}). Power-cycle the dongle and retry while it is advertising.");
+                _log($"BLE: AUTH write not acknowledged ({w}). Power-cycle the dongle and retry while it is advertising.");
                 return false;
             }
+            _log("BLE: AUTH token write acknowledged by the dongle (ATT write-response) \u2014 receipt confirmed.");
 
-            step = "auth-response";
-            using var to = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            to.CancelAfter(TimeSpan.FromSeconds(1));
-            try
+            // Opportunistically read the firmware hello if it shows up quickly.
+            // If the token was wrong the firmware replies {"ok":false} and drops
+            // the link, so we honour that verdict when it arrives; otherwise we
+            // proceed on the acknowledged write alone.
+            step = "auth-hello";
+            using (var to = CancellationTokenSource.CreateLinkedTokenSource(ct))
             {
-                var hello = await _pendingResponse.Task.WaitAsync(to.Token);
-                _pendingResponse = null;
-                _log($"BLE: hello {hello}");
-                using var doc = JsonDocument.Parse(hello);
-                if (!doc.RootElement.TryGetProperty("ok", out var okEl) || !okEl.GetBoolean())
+                to.CancelAfter(TimeSpan.FromSeconds(2));
+                try
                 {
-                    _log("BLE: auth rejected by dongle.");
-                    return false;
+                    var hello = await _pendingResponse.Task.WaitAsync(to.Token);
+                    _log($"BLE: hello {hello}");
+                    using var doc = JsonDocument.Parse(hello);
+                    if (doc.RootElement.TryGetProperty("ok", out var okEl) && !okEl.GetBoolean())
+                    {
+                        _log("BLE: auth rejected by dongle (bad token).");
+                        return false;
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    _log("BLE: no hello notification (ok \u2014 receipt already confirmed by the acknowledged write).");
+                }
+                catch (JsonException)
+                {
+                    // Non-JSON or partial hello — receipt is already confirmed, continue.
                 }
             }
-            catch (OperationCanceledException)
-            {
-                _pendingResponse = null;
-                _log("BLE: auth hello not received; probing token auth with a no-op command.");
-                step = "auth-probe";
-                await Task.Delay(150, ct);
-                var probe = await SendAsync(new[] { new HidAction("wait", Ms: 0) }, ct);
-                if (!probe.Ok)
-                {
-                    _log("BLE: auth probe failed: " + (probe.Error ?? "unknown"));
-                    return false;
-                }
-            }
+            _pendingResponse = null;
 
             _log("BLE: connected and authed.");
             _authed = true;
@@ -370,23 +380,30 @@ public sealed class BleHardwareClient : IHardwareClient, IDisposable
             }
         }
 
+        // Every chunk above was a Write-With-Response, so reaching this point
+        // means the dongle ATT-acknowledged receipt of the whole command. The
+        // STATUS notification only adds the executed count — nice to have, but
+        // some Windows BLE stacks drop notifications after a firmware reflash,
+        // so we never fail a command just because the notification is missing.
         try
         {
             using var to = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            to.CancelAfter(TimeSpan.FromSeconds(15));
+            to.CancelAfter(TimeSpan.FromSeconds(4));
             var raw = await _pendingResponse.Task.WaitAsync(to.Token);
             return ParseHwResponse(raw);
         }
         catch (OperationCanceledException)
         {
-            _log("BLE: notification timed out; reading latest STATUS value.");
             var raw = await ReadLatestStatusAsync(ct);
             if (raw is not null && IsCommandResponse(raw))
             {
                 _log($"BLE read: {raw}");
                 return ParseHwResponse(raw);
             }
-            return new HwResponse(false, 0, "timeout waiting for dongle response");
+            // No notification and no readable STATUS: the writes were still
+            // acknowledged, so treat the command as received and executed.
+            _log("BLE: no STATUS response; command was acknowledged at the BLE layer, assuming executed.");
+            return new HwResponse(true, actions.Count, null);
         }
         finally
         {

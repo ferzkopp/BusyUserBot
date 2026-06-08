@@ -112,28 +112,54 @@ public sealed class OpenAiCompatibleEngine : IAiEngine, IDisposable
         // typically just warn and ignore it.
         ApplyReasoningSettings(requestBody);
 
-        using var resp = await _http.PostAsJsonAsync(_chatPath, requestBody, ct).ConfigureAwait(false);
-        if (!resp.IsSuccessStatusCode)
+        var resp = await _http.PostAsJsonAsync(_chatPath, requestBody, ct).ConfigureAwait(false);
+        try
         {
-            var body = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-            if (body.Length > 1000) body = body[..1000] + "\u2026";
-            throw new HttpRequestException(
-                $"AI endpoint returned {(int)resp.StatusCode} {resp.ReasonPhrase}: {body}");
+            // Some servers (e.g. LM Studio fronting Gemma) strictly validate
+            // reasoning_effort and reject any vocabulary they don't recognise
+            // with a 400 instead of warning and ignoring it. When that
+            // happens, drop the reasoning hints and retry once so the request
+            // still goes through rather than failing the whole turn.
+            if (resp.StatusCode == System.Net.HttpStatusCode.BadRequest
+                && requestBody.ContainsKey("reasoning_effort"))
+            {
+                var errBody = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+                if (errBody.Contains("reasoning_effort", StringComparison.OrdinalIgnoreCase))
+                {
+                    _log?.Invoke("AI: server rejected reasoning_effort; retrying without reasoning hints.");
+                    requestBody.Remove("reasoning_effort");
+                    requestBody.Remove("chat_template_kwargs");
+                    resp.Dispose();
+                    resp = await _http.PostAsJsonAsync(_chatPath, requestBody, ct).ConfigureAwait(false);
+                }
+            }
+
+            if (!resp.IsSuccessStatusCode)
+            {
+                var body = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+                if (body.Length > 1000) body = body[..1000] + "\u2026";
+                throw new HttpRequestException(
+                    $"AI endpoint returned {(int)resp.StatusCode} {resp.ReasonPhrase}: {body}");
+            }
+
+            var doc = await resp.Content.ReadFromJsonAsync<JsonNode>(cancellationToken: ct).ConfigureAwait(false)
+                      ?? throw new InvalidOperationException("empty response from AI");
+
+            var content = doc["choices"]?[0]?["message"]?["content"]?.GetValue<string>()
+                          ?? throw new InvalidOperationException("no content in AI response");
+
+            if (_log is not null)
+            {
+                var trimmed = content.Length > 2000 ? content[..2000] + "\u2026" : content;
+                _log("AI raw: " + trimmed.Replace("\r", "").Replace("\n", " \u21B5 "));
+            }
+
+            return content;
         }
-
-        var doc = await resp.Content.ReadFromJsonAsync<JsonNode>(cancellationToken: ct).ConfigureAwait(false)
-                  ?? throw new InvalidOperationException("empty response from AI");
-
-        var content = doc["choices"]?[0]?["message"]?["content"]?.GetValue<string>()
-                      ?? throw new InvalidOperationException("no content in AI response");
-
-        if (_log is not null)
+        finally
         {
-            var trimmed = content.Length > 2000 ? content[..2000] + "\u2026" : content;
-            _log("AI raw: " + trimmed.Replace("\r", "").Replace("\n", " \u21B5 "));
+            resp.Dispose();
         }
-
-        return content;
     }
 
     public void Dispose() => _http.Dispose();
@@ -151,9 +177,13 @@ public sealed class OpenAiCompatibleEngine : IAiEngine, IDisposable
         switch (raw)
         {
             case "off":
-                // Nemotron understands "off" as a reasoning_effort value.
-                // Qwen3 / GLM / DeepSeek templates honour enable_thinking.
-                requestBody["reasoning_effort"] = "off";
+                // "none" is the OpenAI / LM Studio standard value for
+                // disabling reasoning (Gemma, gpt-oss, etc. reject "off" with
+                // a 400). Qwen3 / GLM / DeepSeek templates additionally honour
+                // enable_thinking. Servers that strictly validate and reject
+                // "none" are handled by the retry-without-reasoning path in
+                // ChatAsync.
+                requestBody["reasoning_effort"] = "none";
                 requestBody["chat_template_kwargs"] = new JsonObject
                 {
                     ["enable_thinking"] = false,

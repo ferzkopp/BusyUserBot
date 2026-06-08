@@ -63,6 +63,20 @@ public sealed class MainForm : Form
     private readonly Button _testMouse = new() { Text = TestMouseLabel, Enabled = false };
     private readonly Button _testAiMouse = new() { Text = TestAiMouseLabel, Enabled = false };
 
+    // Status indicators sitting next to each test button: an animated spinner
+    // while the test runs, a green check on success, a red cross on failure.
+    private readonly Label _hwStatus = new();
+    private readonly Label _aiStatus = new();
+    private readonly Label _mouseStatus = new();
+    private readonly Label _aiMouseStatus = new();
+
+    private enum TestState { Idle, Running, Pass, Fail }
+
+    // Classic ASCII spinner — renders reliably in the default WinForms font.
+    private static readonly string[] SpinnerFrames = { "|", "/", "-", "\\" };
+    private readonly System.Windows.Forms.Timer _spinnerTimer = new() { Interval = 110 };
+    private int _spinnerFrame;
+
     // Log.
     private readonly TextBox _log = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Font = new Font(FontFamily.GenericMonospace, 8) };
 
@@ -91,10 +105,10 @@ public sealed class MainForm : Form
         _cfg = ConfigStore.Load();
 
         Text = "Busy User Bot" + (dryRun ? "  [dry-run]" : "") + (fakeAi ? "  [fake-ai]" : "");
-        Width = 1020;
-        Height = 1080;
+        Width = 1120;
+        Height = 1120;
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(920, 920);
+        MinimumSize = new Size(1040, 960);
 
         BuildUi();
         BindFromConfig();
@@ -374,24 +388,43 @@ public sealed class MainForm : Form
         {
             Dock = DockStyle.Fill,
             FlowDirection = FlowDirection.LeftToRight,
-            Padding = new Padding(0, 4, 0, 4),
+            WrapContents = false,
+            AutoScroll = true,
+            Padding = new Padding(0, 6, 0, 6),
         };
-        _testHw.Size = new Size(130, 32);
-        _testAi.Size = new Size(110, 32);
-        _testMouse.Size = new Size(130, 32);
-        _testAiMouse.Size = new Size(150, 32);
-        _testHw.Margin = new Padding(0, 0, 8, 0);
-        _testAi.Margin = new Padding(0, 0, 8, 0);
-        _testMouse.Margin = new Padding(0, 0, 8, 0);
-        _testAiMouse.Margin = new Padding(0, 0, 0, 0);
+        _testHw.Size = new Size(130, 38);
+        _testAi.Size = new Size(110, 38);
+        _testMouse.Size = new Size(130, 38);
+        _testAiMouse.Size = new Size(150, 38);
+        _testHw.Margin = new Padding(0, 0, 4, 0);
+        _testAi.Margin = new Padding(0, 0, 4, 0);
+        _testMouse.Margin = new Padding(0, 0, 4, 0);
+        _testAiMouse.Margin = new Padding(0, 0, 4, 0);
+
+        // Configure the per-test status indicators (spinner / check / cross).
+        foreach (var status in new[] { _hwStatus, _aiStatus, _mouseStatus, _aiMouseStatus })
+        {
+            status.AutoSize = false;
+            status.Size = new Size(24, 38);
+            status.TextAlign = ContentAlignment.MiddleCenter;
+            status.Font = new Font(status.Font.FontFamily, 9f, FontStyle.Bold);
+            status.Margin = new Padding(0, 0, 16, 0);
+            status.Tag = TestState.Idle;
+        }
+
+        _spinnerTimer.Tick += OnSpinnerTick;
 
         testButtons.Controls.Add(_testHw);
+        testButtons.Controls.Add(_hwStatus);
         testButtons.Controls.Add(_testAi);
+        testButtons.Controls.Add(_aiStatus);
         testButtons.Controls.Add(_testMouse);
+        testButtons.Controls.Add(_mouseStatus);
         testButtons.Controls.Add(_testAiMouse);
+        testButtons.Controls.Add(_aiMouseStatus);
 
-        AddRow("", startRow, height: 48);
-        AddRow("Test:", testButtons, height: 46);
+        AddRow("", startRow, height: 56);
+        AddRow("Test:", testButtons, height: 58);
 
         // ---- Log ----
         int logRow = root.RowCount;
@@ -674,6 +707,54 @@ public sealed class MainForm : Form
         _testAiMouse.Enabled = _hwTestPassed && _aiTestPassed;
     }
 
+    // -------------------------------------------------------------------
+    // Test-status indicators (spinner / check / cross)
+    // -------------------------------------------------------------------
+
+    private IEnumerable<Label> AllStatusLabels
+        => new[] { _hwStatus, _aiStatus, _mouseStatus, _aiMouseStatus };
+
+    /// <summary>Flag a test as in-progress and start the spinner animation.</summary>
+    private void SetTestRunning(Label status)
+    {
+        status.Tag = TestState.Running;
+        status.ForeColor = SystemColors.ControlText;
+        status.Text = SpinnerFrames[_spinnerFrame];
+        if (!_spinnerTimer.Enabled) _spinnerTimer.Start();
+    }
+
+    /// <summary>Flag a finished test with a green check or red cross.</summary>
+    private void SetTestResult(Label status, bool ok)
+    {
+        status.Tag = ok ? TestState.Pass : TestState.Fail;
+        status.ForeColor = ok ? Color.ForestGreen : Color.Firebrick;
+        status.Text = ok ? "\u2705" : "\u274c";
+        StopSpinnerIfIdle();
+    }
+
+    /// <summary>Clear a test's status indicator entirely.</summary>
+    private void SetTestIdle(Label status)
+    {
+        status.Tag = TestState.Idle;
+        status.Text = "";
+        StopSpinnerIfIdle();
+    }
+
+    private void StopSpinnerIfIdle()
+    {
+        bool anyRunning = AllStatusLabels.Any(l => (l.Tag as TestState?) == TestState.Running);
+        if (!anyRunning) _spinnerTimer.Stop();
+    }
+
+    private void OnSpinnerTick(object? sender, EventArgs e)
+    {
+        _spinnerFrame = (_spinnerFrame + 1) % SpinnerFrames.Length;
+        foreach (var l in AllStatusLabels)
+            if ((l.Tag as TestState?) == TestState.Running)
+                l.Text = SpinnerFrames[_spinnerFrame];
+    }
+
+
     /// <summary>
     /// Reset AI-test state and cancel any in-flight AI test. Called whenever
     /// the user changes a setting that would make the previous green tick
@@ -689,10 +770,11 @@ public sealed class MainForm : Form
         // race in and re-flag _aiTestPassed for the previous model.
         try { _aiTestCts?.Cancel(); } catch { /* already disposed */ }
 
-        if (_aiTestPassed || _testAi.Text != TestAiLabel)
+        if (_aiTestPassed || (_aiStatus.Tag as TestState?) != TestState.Idle)
         {
             _aiTestPassed = false;
             _testAi.Text = TestAiLabel;
+            SetTestIdle(_aiStatus);
             Log($"AI test reset ({reason}) \u2014 re-run \"{TestAiLabel}\".");
             UpdateStartButton();
         }
@@ -708,9 +790,10 @@ public sealed class MainForm : Form
     {
         BindToConfig();
         ConfigStore.Save(_cfg);
-        _testHw.Text = $"{TestHwLabel}\u2026";
+        _testHw.Text = TestHwLabel;
         _testHw.Enabled = false;
         _hwTestPassed = false;
+        SetTestRunning(_hwStatus);
         UpdateStartButton();
 
         // Release old test client if any
@@ -725,13 +808,13 @@ public sealed class MainForm : Form
             bool ok = await _testHwClient.ConnectAsync(CancellationToken.None);
             Log(ok ? "HW: connected & authed" : "HW: connect failed");
             _deviceId.Text = _cfg.Dongle.DeviceId;
-            _testHw.Text = ok ? $"{TestHwLabel} \u2705" : $"{TestHwLabel} \u274c";
+            SetTestResult(_hwStatus, ok);
             _hwTestPassed = ok;
         }
         catch (Exception ex)
         {
             Log("HW test failed: " + ex.Message);
-            _testHw.Text = $"{TestHwLabel} \u274c";
+            SetTestResult(_hwStatus, false);
         }
         finally
         {
@@ -749,8 +832,8 @@ public sealed class MainForm : Form
 
     private async void OnTestMouseClicked(object? sender, EventArgs e)
     {
-        _testMouse.Text = $"{TestMouseLabel}\u2026";
         _testMouse.Enabled = false;
+        SetTestRunning(_mouseStatus);
         try
         {
             // Reuse an already-connected hardware client (from a recent
@@ -773,7 +856,7 @@ public sealed class MainForm : Form
                 if (!ok)
                 {
                     Log("Mouse test: connect failed");
-                    _testMouse.Text = $"{TestMouseLabel} \u274c";
+                    SetTestResult(_mouseStatus, false);
                     (hw as IDisposable)?.Dispose();
                     return;
                 }
@@ -808,12 +891,12 @@ public sealed class MainForm : Form
                 if (resp.Ok)
                 {
                     Log($"Mouse test: dongle executed {resp.Executed}/{actions.Count} actions");
-                    _testMouse.Text = $"{TestMouseLabel} \u2705";
+                    SetTestResult(_mouseStatus, true);
                 }
                 else
                 {
                     Log($"Mouse test: dongle reported failure after {resp.Executed} action(s): {resp.Error}");
-                    _testMouse.Text = $"{TestMouseLabel} \u274c";
+                    SetTestResult(_mouseStatus, false);
                 }
             }
             finally
@@ -824,7 +907,7 @@ public sealed class MainForm : Form
         catch (Exception ex)
         {
             Log("Mouse test failed: " + ex.Message);
-            _testMouse.Text = $"{TestMouseLabel} \u274c";
+            SetTestResult(_mouseStatus, false);
         }
         finally
         {
@@ -847,9 +930,10 @@ public sealed class MainForm : Form
             return;
         }
 
-        _testAi.Text = $"{TestAiLabel}\u2026";
+        _testAi.Text = TestAiLabel;
         _testAi.Enabled = false;
         _aiTestPassed = false;
+        SetTestRunning(_aiStatus);
         UpdateStartButton();
 
         // Fresh external-cancellation source so a model/engine/endpoint
@@ -872,11 +956,15 @@ public sealed class MainForm : Form
                 Log($"AI test: scenarios → {string.Join(" | ", sample)}");
 
                 using var cts = CancellationTokenSource.CreateLinkedTokenSource(externalToken);
-                cts.CancelAfter(TimeSpan.FromSeconds(Math.Max(10, _cfg.Loop.AiTimeoutSeconds)));
 
                 var plannerSys = Prompts.BuildPlannerSystem(_playbook.Planner.SystemPrompt, rules);
                 var plannerUser = Prompts.BuildPlannerUser(sample, _playbook.Planner.MaxStepsPerPlan, shot.SentWidth, shot.SentHeight, null);
-                var rawPlan = await ai.ChatAsync(plannerSys, plannerUser, shot, cts.Token);
+                string rawPlan;
+                using (var plannerTimeout = CancellationTokenSource.CreateLinkedTokenSource(cts.Token))
+                {
+                    plannerTimeout.CancelAfter(TimeSpan.FromSeconds(Math.Max(10, _cfg.Loop.AiTimeoutSeconds)));
+                    rawPlan = await ai.ChatAsync(plannerSys, plannerUser, shot, plannerTimeout.Token);
+                }
                 var plan = CommandParser.ParsePlan(rawPlan);
                 Log($"AI test: planner goal=\"{plan.Goal}\", {plan.Steps.Count} step(s)");
                 for (int i = 0; i < plan.Steps.Count; i++)
@@ -884,12 +972,17 @@ public sealed class MainForm : Form
 
                 var validatorSys = Prompts.BuildValidatorSystem(_playbook.Validator.SystemPrompt, rules);
                 var validatorUser = Prompts.BuildValidatorUser(plan);
-                var rawVerdict = await ai.ChatAsync(validatorSys, validatorUser, shot, cts.Token);
+                string rawVerdict;
+                using (var validatorTimeout = CancellationTokenSource.CreateLinkedTokenSource(cts.Token))
+                {
+                    validatorTimeout.CancelAfter(TimeSpan.FromSeconds(Math.Max(10, _cfg.Loop.AiTimeoutSeconds)));
+                    rawVerdict = await ai.ChatAsync(validatorSys, validatorUser, shot, validatorTimeout.Token);
+                }
                 var verdict = CommandParser.ParseValidatorVerdict(rawVerdict);
                 Log($"AI test: validator approved={verdict.Approved} ({string.Join("; ", verdict.Reasons)})");
 
                 _aiTestPassed = true;
-                _testAi.Text = $"{TestAiLabel} \u2705";
+                SetTestResult(_aiStatus, true);
             }
             finally { (ai as IDisposable)?.Dispose(); }
         }
@@ -898,18 +991,18 @@ public sealed class MainForm : Form
             if (externalToken.IsCancellationRequested)
             {
                 Log("AI test: cancelled (config changed)");
-                _testAi.Text = TestAiLabel;
+                SetTestIdle(_aiStatus);
             }
             else
             {
                 Log($"AI test: timed out after {Math.Max(10, _cfg.Loop.AiTimeoutSeconds)}s");
-                _testAi.Text = $"{TestAiLabel} \u274c";
+                SetTestResult(_aiStatus, false);
             }
         }
         catch (Exception ex)
         {
             Log("AI test: failed \u2014 " + ex.Message);
-            _testAi.Text = $"{TestAiLabel} \u274c";
+            SetTestResult(_aiStatus, false);
         }
         finally
         {
@@ -931,8 +1024,9 @@ public sealed class MainForm : Form
         BindToConfig();
         ConfigStore.Save(_cfg);
 
-        _testAiMouse.Text = $"{TestAiMouseLabel}\u2026";
+        _testAiMouse.Text = TestAiMouseLabel;
         _testAiMouse.Enabled = false;
+        SetTestRunning(_aiMouseStatus);
 
         // Same external-cancellation hook as OnTestAiClicked so a model swap
         // mid-test aborts the in-flight AI calls.
@@ -958,7 +1052,7 @@ public sealed class MainForm : Form
                 if (!await hw.ConnectAsync(CancellationToken.None))
                 {
                     Log("AI mouse test: hardware connect failed");
-                    _testAiMouse.Text = $"{TestAiMouseLabel} \u274c";
+                    SetTestResult(_aiMouseStatus, false);
                     (hw as IDisposable)?.Dispose();
                     _testAiMouse.Enabled = true;
                     return;
@@ -967,7 +1061,7 @@ public sealed class MainForm : Form
             catch (Exception ex)
             {
                 Log("AI mouse test: hardware connect failed: " + ex.Message);
-                _testAiMouse.Text = $"{TestAiMouseLabel} \u274c";
+                SetTestResult(_aiMouseStatus, false);
                 (hw as IDisposable)?.Dispose();
                 _testAiMouse.Enabled = true;
                 return;
@@ -1218,13 +1312,13 @@ Rules:
                 }
             }
 
-            _testAiMouse.Text = dismissed ? $"{TestAiMouseLabel} \u2705" : $"{TestAiMouseLabel} \u274c";
+            SetTestResult(_aiMouseStatus, dismissed);
             if (!dismissed) Log($"AI mouse test: FAILED after {MaxAttempts} attempts");
         }
         catch (Exception ex)
         {
             Log("AI mouse test: failed \u2014 " + ex.Message);
-            _testAiMouse.Text = $"{TestAiMouseLabel} \u274c";
+            SetTestResult(_aiMouseStatus, false);
         }
         finally
         {
