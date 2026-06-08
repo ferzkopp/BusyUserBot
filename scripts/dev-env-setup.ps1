@@ -216,9 +216,23 @@ if ($SkipPython) {
     Write-Skip "Python install skipped (-SkipPython)"
 } else {
     Write-Step "Python 3"
-    Install-WingetPackage -Id 'Python.Python.3.12' -FriendlyName 'Python 3.12' -TestCommand 'python'
+    # Test-Command returns true for the Windows Store App Execution Alias stub
+    # (WindowsApps\python.exe) which is not a real Python install. Probe by
+    # actually running python --version; the stub exits non-zero without output.
+    if (Test-Command python) { & cmd /c 'python --version >nul 2>&1' } else { $global:LASTEXITCODE = 1 }
+    $pythonReal = ($LASTEXITCODE -eq 0)
+    $global:LASTEXITCODE = 0
+    if (-not $pythonReal) {
+        # Clear the -TestCommand guard so Install-WingetPackage always installs.
+        Install-WingetPackage -Id 'Python.Python.3.12' -FriendlyName 'Python 3.12'
+    } else {
+        Write-Skip "Python 3.12 already installed (python on PATH)"
+    }
 
-    if (Test-Command python) {
+    if (Test-Command python) { & cmd /c 'python --version >nul 2>&1' } else { $global:LASTEXITCODE = 1 }
+    $pythonReal = ($LASTEXITCODE -eq 0)
+    $global:LASTEXITCODE = 0
+    if ($pythonReal) {
         Write-Step "Python package: bleak"
         # `pip show <pkg>` exits non-zero and prints a warning to stderr if the
         # package isn't installed. With $ErrorActionPreference='Stop' even a
@@ -501,8 +515,8 @@ Write-Host "Setup complete." -ForegroundColor Green
 Write-Host ""
 Write-Host "Next steps:"
 Write-Host "  1. Build the controller:  cd controller; dotnet build"
-Write-Host "  2. Flash the dongle (see docs/hardware-setup.md)."
-Write-Host "  3. Pair the dongle once via Windows Settings > Bluetooth > Add device."
+Write-Host "  2. Flash the dongle and run the smoke test (see docs/hardware-setup.md)."
+Write-Host "  3. Run the controller; Windows Bluetooth pairing is not required."
 Write-Host ""
 
 # Restore prior console encoding.

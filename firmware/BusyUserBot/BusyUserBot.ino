@@ -72,7 +72,7 @@ static constexpr const char* AUTH_UUID = "6e601001-b5a3-f393-e0a9-e50e24dcca9e";
 static constexpr const char* CMD_UUID  = "6e601002-b5a3-f393-e0a9-e50e24dcca9e";
 static constexpr const char* STAT_UUID = "6e601003-b5a3-f393-e0a9-e50e24dcca9e";
 
-static constexpr const char* FIRMWARE_VERSION = "0.2.3-ble";
+static constexpr const char* FIRMWARE_VERSION = "0.2.7-ble";
 
 // ---------------------------------------------------------------------------
 // HID + display
@@ -89,8 +89,25 @@ static constexpr int TFT_RST_PIN       = 1;
 // Backlight is active-LOW; driving the pin LOW turns the LED on.
 static constexpr int TFT_BACKLIGHT_PIN = 38;
 
-SPIClass        tftSpi(FSPI);
-Adafruit_ST7735 tft(&tftSpi, TFT_CS_PIN, TFT_DC_PIN, TFT_RST_PIN);
+SPIClass tftSpi(FSPI);
+
+class BusyUserDisplay : public Adafruit_ST7735 {
+public:
+    BusyUserDisplay(SPIClass* spi, int8_t cs, int8_t dc, int8_t rst)
+        : Adafruit_ST7735(spi, cs, dc, rst) {}
+
+    void setPanelOffset(int8_t col, int8_t row) {
+        setColRowStart(col, row);
+    }
+};
+
+BusyUserDisplay tft(&tftSpi, TFT_CS_PIN, TFT_DC_PIN, TFT_RST_PIN);
+
+// The T-Dongle-S3's 160x80 ST7735 glass is offset slightly from the
+// Adafruit MINI160x80 default; without this, the last physical column and
+// bottom rows can retain power-on garbage.
+static constexpr int8_t TFT_COL_START = 25;
+static constexpr int8_t TFT_ROW_START = 3;
 
 // ---------------------------------------------------------------------------
 // Per-connection state
@@ -113,8 +130,12 @@ static String g_topLine = "boot";
 static String g_midLine = "";
 static String g_botLine = "";
 
-static void redraw() {
+static void clearDisplay() {
     tft.fillScreen(ST77XX_BLACK);
+}
+
+static void redraw() {
+    clearDisplay();
     tft.setTextSize(1);
     tft.setTextWrap(false);
     tft.setTextColor(ST77XX_WHITE);
@@ -439,7 +460,7 @@ class ServerCb : public NimBLEServerCallbacks {
     void onDisconnect(NimBLEServer* s, NimBLEConnInfo& /*info*/, int /*reason*/) override {
         releaseAllInput();
         g_conn = ConnState{};
-        showStatus("BLE", "advertising", String("v") + FIRMWARE_VERSION);
+        showStatus("advertising", String(DEVICE_NAME), String("v") + FIRMWARE_VERSION);
         NimBLEDevice::startAdvertising();
     }
     void onMTUChange(uint16_t mtu, NimBLEConnInfo& /*info*/) override {
@@ -524,8 +545,9 @@ void setup() {
     tft.initR(INITR_MINI160x80);
     tft.setSPISpeed(20000000);
     tft.setRotation(1);          // 160 wide x 80 tall
+    tft.setPanelOffset(TFT_COL_START, TFT_ROW_START);
     tft.invertDisplay(true);     // GREENTAB160x80 panel needs inversion ON
-    tft.fillScreen(ST77XX_BLACK);
+    clearDisplay();
     digitalWrite(TFT_BACKLIGHT_PIN, LOW);  // backlight ON
     showStatus("boot", FIRMWARE_VERSION, "");
     delay(200);
@@ -549,10 +571,9 @@ void setup() {
     NimBLEDevice::init(DEVICE_NAME);
     NimBLEDevice::setPower(ESP_PWR_LVL_P9);
     NimBLEDevice::setMTU(247);
-    // Require bonding + MITM-free encryption (Just Works). Windows will
-    // surface a standard pairing dialog the first time.
-    NimBLEDevice::setSecurityAuth(true, false, true);
-    NimBLEDevice::setSecurityIOCap(BLE_HS_IO_NO_INPUT_OUTPUT);
+    // The custom protocol is guarded by DEVICE_TOKEN. Do not enable BLE
+    // bonding/security here: some Windows ARM Bluetooth stacks get stuck in
+    // the OS pairing flow even though the GATT attributes are plain.
     stageOk("BLE init");
 
     stageBegin("BLE svc");
@@ -561,15 +582,15 @@ void setup() {
 
     NimBLEService* svc = g_server->createService(SVC_UUID);
     auto* authChar = svc->createCharacteristic(AUTH_UUID,
-        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_ENC);
+        NIMBLE_PROPERTY::WRITE);
     authChar->setCallbacks(new AuthCb());
 
     auto* cmdChar = svc->createCharacteristic(CMD_UUID,
-        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::WRITE_ENC);
+        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
     cmdChar->setCallbacks(new CmdCb());
 
     g_statChar = svc->createCharacteristic(STAT_UUID,
-        NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::READ_ENC);
+        NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::READ);
 
     svc->start();
     stageOk("BLE svc");
@@ -596,7 +617,7 @@ void setup() {
     NimBLEDevice::startAdvertising();
     stageOk("BLE adv");
 
-    showStatus("BLE", String(DEVICE_NAME) + " adv", String("v") + FIRMWARE_VERSION);
+    showStatus("advertising", String(DEVICE_NAME), String("v") + FIRMWARE_VERSION);
     Serial.println(F("[ready] advertising"));
 }
 

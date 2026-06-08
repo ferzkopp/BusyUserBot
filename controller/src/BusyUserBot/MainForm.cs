@@ -47,7 +47,7 @@ public sealed class MainForm : Form
     private readonly Label _playbookStats = new() { AutoSize = true, ForeColor = SystemColors.GrayText };
     private readonly NumericUpDown _interval = new() { Minimum = 100, Maximum = 60000, Value = 1500, Increment = 100 };
     private readonly NumericUpDown _maxIter = new() { Minimum = 1, Maximum = 10000, Value = 50 };
-    private readonly NumericUpDown _aiTimeoutSec = new() { Minimum = 10, Maximum = 600, Value = 60, Increment = 5 };
+    private readonly NumericUpDown _aiTimeoutSec = new() { Minimum = 10, Maximum = 600, Value = 180, Increment = 5 };
 
     // Action buttons.
     private const string TestHwLabel = "Test HW";

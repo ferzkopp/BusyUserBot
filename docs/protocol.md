@@ -1,8 +1,8 @@
 # Wire protocol: Controller ↔ Dongle (Bluetooth LE)
 
 The dongle exposes a single custom GATT service over Bluetooth LE. The
-controller pairs once via Windows, then connects by device id and exchanges
-length-prefixed JSON over two characteristics.
+controller connects to the advertising device by name, then exchanges
+length-prefixed JSON over two characteristics after token authentication.
 
 This document is the source of truth for the wire format. The same JSON
 schema is what the AI Executor stage is instructed to emit in
@@ -15,7 +15,7 @@ deserialised from the model's output and re-serialised onto the wire.
    Controller (PC, WinRT BLE)                Dongle (ESP32-S3, NimBLE)
    ──────────────────────────                ─────────────────────────
                                                 advertise "BusyUserBot"
-            connect (encrypted, bonded)  ───►  accept
+            connect                     ───►  accept
             ╔═══════════════════════════════════════════════════╗
             ║ AUTH (write):  "<DEVICE_TOKEN>"                   ║
             ║                                                   ║
@@ -44,13 +44,13 @@ keys / mouse buttons.
 | Role     | UUID                                   | Properties                  | Direction          |
 | -------- | -------------------------------------- | --------------------------- | ------------------ |
 | Service  | `6e601000-b5a3-f393-e0a9-e50e24dcca9e` | —                           | —                  |
-| `AUTH`   | `6e601001-b5a3-f393-e0a9-e50e24dcca9e` | Write (encrypted)           | controller → dongle |
-| `COMMAND`| `6e601002-b5a3-f393-e0a9-e50e24dcca9e` | Write / Write-No-Resp (enc) | controller → dongle |
-| `STATUS` | `6e601003-b5a3-f393-e0a9-e50e24dcca9e` | Notify (encrypted)          | dongle → controller |
+| `AUTH`   | `6e601001-b5a3-f393-e0a9-e50e24dcca9e` | Write                       | controller → dongle |
+| `COMMAND`| `6e601002-b5a3-f393-e0a9-e50e24dcca9e` | Write / Write-No-Resp       | controller → dongle |
+| `STATUS` | `6e601003-b5a3-f393-e0a9-e50e24dcca9e` | Notify / Read               | dongle → controller |
 
-The encrypted properties force the link to be paired and bonded. The first
-time the controller writes to `AUTH`, Windows pops a standard pairing
-dialog; the bond persists and subsequent connections are silent.
+The GATT attributes are intentionally plain and guarded by the
+`DEVICE_TOKEN`; this avoids Windows ARM Bluetooth stacks getting stuck in
+the OS pairing flow before the firmware receives `AUTH`.
 
 ## Authentication
 
@@ -59,7 +59,7 @@ token (matching `DEVICE_TOKEN` in `firmware/BusyUserBot/secrets.h`) to
 `AUTH`. The dongle replies on `STATUS` with either:
 
 ```json
-{ "ok": true, "firmware": "0.2.3-ble" }
+{ "ok": true, "firmware": "0.2.7-ble" }
 ```
 
 …or, on a wrong token, `{"ok":false,"error":"bad token"}` followed by an
@@ -157,17 +157,15 @@ CTRL  SHIFT  ALT  GUI         (GUI = Windows key; aliases: WIN, WINDOWS, CMD)
 
 The controller never initiates pairing from code. Workflow is:
 
-1. User pairs the dongle once via **Windows Settings → Bluetooth → Add
-   device** (the dongle advertises as `BusyUserBot` by default).
-2. The controller scans the *paired* device list for the configured name
-   on first launch, opens it via `BluetoothLEDevice.FromIdAsync`, and
+1. The dongle advertises as `BusyUserBot` by default.
+2. The controller scans visible BLE devices for the configured name,
+   opens it via `BluetoothLEDevice.FromIdAsync`, and
    caches the resulting `DeviceId` in
    `%APPDATA%\BusyUserBot\settings.json`.
 3. Subsequent launches skip the scan and connect by id.
 
-If the user re-pairs the dongle on a different PC, the cached id becomes
-invalid; the controller falls back to a name scan automatically and updates
-the cache.
+If the cached id becomes invalid, the controller falls back to a name scan
+automatically and updates the cache.
 
 ## Manual exercise
 

@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Interactive guided flash + pair + smoke test for the LILYGO T-Dongle-S3.
+    Interactive guided flash + smoke test for the LILYGO T-Dongle-S3.
 
 .DESCRIPTION
     Combines steps 3-6 of docs/hardware-setup.md into a single interactive
@@ -12,13 +12,11 @@
          `esp32:esp32:lilygo_t_dongle_s3` FQBN first and falls back to
          the generic `esp32:esp32:esp32s3` board with explicit build
          properties if the lilygo variant isn't recognised.
-      5. Open the Windows Bluetooth pairing UI so the user can pair the
-         dongle once per PC.
-      6. Run the Python test client (`tools/test_client.py`) to verify
+        5. Run the Python test client (`tools/test_client.py`) to verify
          status / display / typing.
 
-    Prerequisites (all installed by `scripts/dev-env-setup.ps1`):
-      * arduino-cli on PATH
+     Prerequisites (all installed by `scripts/dev-env-setup.ps1`):
+        * arduino-cli on PATH or in a standard Windows install location
       * ESP32 Arduino core 3.x and the project's libraries
       * Python 3 + bleak (for the smoke test)
       * firmware/BusyUserBot/secrets.h with a real DEVICE_TOKEN
@@ -38,11 +36,14 @@
     run remembered a port.
 
 .PARAMETER SkipPair
-    Don't open the Windows Bluetooth pairing dialog (useful if the dongle
-    is already paired with this PC).
+    Deprecated. Windows Bluetooth pairing is no longer required.
 
 .PARAMETER SkipSmokeTest
     Don't run the Python test client at the end.
+
+.PARAMETER RunTypingTest
+    Also run a real HID typing test. Off by default because it types into
+    whichever window is focused on the dongle's USB host.
 
 .PARAMETER DeviceName
     BLE advertised name to scan for in the smoke test. Defaults to the
@@ -53,8 +54,8 @@
     powershell -ExecutionPolicy Bypass -File scripts/flash-dongle.ps1
 
 .EXAMPLE
-    # Already know the COM port and the dongle is already paired:
-    powershell -ExecutionPolicy Bypass -File scripts/flash-dongle.ps1 -Port COM7 -SkipPair
+    # Already know the COM port:
+    powershell -ExecutionPolicy Bypass -File scripts/flash-dongle.ps1 -Port COM7
 
 .EXAMPLE
     # Force full autodetection, ignoring any cached port:
@@ -67,6 +68,7 @@ param(
     [switch] $NoCache,
     [switch] $SkipPair,
     [switch] $SkipSmokeTest,
+    [switch] $RunTypingTest,
     [string] $DeviceName
 )
 
@@ -86,7 +88,23 @@ function Test-Command([string]$name) {
     $null -ne (Get-Command $name -ErrorAction SilentlyContinue)
 }
 
-function Pause-ForUser([string]$msg) {
+function Resolve-ArduinoCli {
+    $cmd = Get-Command 'arduino-cli' -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+
+    $candidates = @(
+        (Join-Path $env:ProgramFiles 'Arduino CLI\arduino-cli.exe'),
+        (Join-Path $env:LOCALAPPDATA 'Programs\Arduino CLI\arduino-cli.exe')
+    )
+
+    foreach ($candidate in $candidates) {
+        if (Test-Path -LiteralPath $candidate) { return $candidate }
+    }
+
+    throw "arduino-cli not found. Run scripts/dev-env-setup.ps1 first."
+}
+
+function Read-UserConfirmation([string]$msg) {
     Write-Host ""
     Write-Host $msg -ForegroundColor Yellow
     Write-Host "    Press Enter to continue, or Ctrl+C to abort..." -ForegroundColor DarkGray
@@ -96,7 +114,7 @@ function Pause-ForUser([string]$msg) {
 function Get-BoardPorts {
     # Returns the set of serial port addresses currently visible to
     # arduino-cli. JSON output is more robust than parsing the table.
-    $json = & arduino-cli board list --format json 2>$null
+    $json = & $script:ArduinoCli board list --format json 2>$null
     if ($LASTEXITCODE -ne 0 -or -not $json) { return @() }
     try {
         $obj = $json | ConvertFrom-Json
@@ -129,10 +147,14 @@ $sketchDir    = Join-Path $repoRoot 'firmware\BusyUserBot'
 $secretsPath  = Join-Path $sketchDir 'secrets.h'
 $settingsPath = Join-Path $env:APPDATA 'BusyUserBot\settings.json'
 $testClient   = Join-Path $repoRoot 'tools\test_client.py'
+$script:ArduinoCli = Resolve-ArduinoCli
+$arduinoTemp = Join-Path $repoRoot '.arduino-tmp'
+[void](New-Item -ItemType Directory -Force -Path $arduinoTemp)
+$env:TEMP = $arduinoTemp
+$env:TMP = $arduinoTemp
 
-if (-not (Test-Command 'arduino-cli')) {
-    throw "arduino-cli not found on PATH. Run scripts/dev-env-setup.ps1 first."
-}
+Write-Info "Using arduino-cli: $script:ArduinoCli"
+Write-Info "Using Arduino temp dir: $arduinoTemp"
 if (-not (Test-Path -LiteralPath $sketchDir)) {
     throw "Firmware sketch directory not found: $sketchDir"
 }
@@ -169,7 +191,7 @@ if (-not $DeviceName) {
 }
 
 Write-Host ""
-Write-Host "BusyUserBot dongle flash + pair + smoke test" -ForegroundColor Cyan
+Write-Host "BusyUserBot dongle flash + smoke test" -ForegroundColor Cyan
 Write-Host "    repo            : $repoRoot"
 Write-Host "    sketch          : $sketchDir"
 Write-Host "    secrets.h       : $secretsPath"
@@ -230,7 +252,7 @@ if ($Port) {
     Write-Host "    * If this is a re-flash on a fresh boot, no need to hold BOOT --" -ForegroundColor DarkGray
     Write-Host "      arduino-cli will reset the dongle into download mode for you." -ForegroundColor DarkGray
     Write-Host "    * If upload fails, re-run with -NoCache and hold BOOT while plugging in." -ForegroundColor DarkGray
-    Pause-ForUser "Press Enter once the dongle is plugged in."
+    Read-UserConfirmation "Press Enter once the dongle is plugged in."
 
     # Sanity check: warn (don't block) if the cached / supplied port isn't visible.
     $visible = Get-BoardPorts
@@ -243,7 +265,7 @@ if ($Port) {
     Write-Info "We snapshot the serial ports now, then again after you plug the dongle in,"
     Write-Info "and identify it as the new entry. See docs/hardware-setup.md step 3 for details."
 
-    Pause-ForUser "Make sure the dongle is UNPLUGGED right now."
+    Read-UserConfirmation "Make sure the dongle is UNPLUGGED right now."
 
     $before = Get-BoardPorts
     Write-Info ("Ports before: " + ($(if ($before.Count) { $before -join ', ' } else { '(none)' })))
@@ -254,7 +276,7 @@ if ($Port) {
     Write-Host "      button while plugging in (download mode -- screen stays dark)." -ForegroundColor DarkGray
     Write-Host "    * Otherwise just plug it into a USB-A port directly on the PC." -ForegroundColor DarkGray
     Write-Host "    * Wait for any 'Setting up a device / Device is ready' Windows toast to finish." -ForegroundColor DarkGray
-    Pause-ForUser "Press Enter once the dongle is plugged in and Windows is done with it."
+    Read-UserConfirmation "Press Enter once the dongle is plugged in and Windows is done with it."
 
     $after = Get-BoardPorts
     Write-Info ("Ports after : " + ($(if ($after.Count) { $after -join ', ' } else { '(none)' })))
@@ -295,12 +317,12 @@ $fallbackFqbn = 'esp32:esp32:esp32s3:USBMode=default,CDCOnBoot=cdc,PSRAM=disable
 $fqbn = $primaryFqbn
 
 Write-Info "Compiling with FQBN: $fqbn"
-& arduino-cli compile --fqbn $fqbn $sketchDir
+& $script:ArduinoCli compile --fqbn $fqbn $sketchDir
 if ($LASTEXITCODE -ne 0) {
     Write-WarnMsg "Compile failed with $primaryFqbn. Falling back to generic esp32s3 with explicit build properties."
     $fqbn = $fallbackFqbn
     Write-Info "Compiling with FQBN: $fqbn"
-    & arduino-cli compile --fqbn $fqbn $sketchDir
+    & $script:ArduinoCli compile --fqbn $fqbn $sketchDir
     if ($LASTEXITCODE -ne 0) {
         throw "arduino-cli compile failed for both $primaryFqbn and the esp32s3 fallback."
     }
@@ -308,7 +330,7 @@ if ($LASTEXITCODE -ne 0) {
 Write-Ok "Compile succeeded ($fqbn)"
 
 Write-Info "Uploading to $Port ..."
-& arduino-cli upload --fqbn $fqbn --port $Port $sketchDir
+& $script:ArduinoCli upload --fqbn $fqbn --port $Port $sketchDir
 if ($LASTEXITCODE -ne 0) {
     throw "arduino-cli upload failed for $Port."
 }
@@ -323,26 +345,14 @@ if (-not $NoCache) {
 Write-Host ""
 Write-Host "Now UNPLUG and REPLUG the dongle (no RST button)." -ForegroundColor Yellow
 Write-Host "    * The on-board ST7735 display should show: BLE / advertising / $DeviceName" -ForegroundColor DarkGray
-Pause-ForUser "Press Enter once the display shows the advertising message."
+Read-UserConfirmation "Press Enter once the display shows the advertising message."
 
 # ---------------------------------------------------------------------------
-# Step 5: Pair with Windows
+# Step 5: No Windows pairing required
 # ---------------------------------------------------------------------------
-if ($SkipPair) {
-    Write-Step "Step 5: Pairing skipped (-SkipPair)"
-} else {
-    Write-Step "Step 5: Pair the dongle in Windows Bluetooth settings"
-    Write-Info "Opening: Settings > Bluetooth & devices > Add device"
-    Write-Info "Pick 'Bluetooth' in the dialog, wait for '$DeviceName' to appear, click it."
-    Write-Info "Just-Works pairing -- no PIN required. If it's already paired, just close the dialog."
-
-    try {
-        Start-Process 'ms-settings:bluetooth' | Out-Null
-    } catch {
-        Write-WarnMsg "Could not launch ms-settings:bluetooth ($($_.Exception.Message)). Open it manually."
-    }
-    Pause-ForUser "Press Enter once pairing is complete (or the device is already paired)."
-}
+Write-Step "Step 5: Windows pairing not required"
+Write-Info "The controller and test client connect to the advertising BLE device by name."
+Write-Info "If Windows shows '$DeviceName' stuck at Connecting, remove it from Bluetooth settings and do not pair it again."
 
 # ---------------------------------------------------------------------------
 # Step 6: Smoke test via tools/test_client.py
@@ -389,16 +399,26 @@ function Invoke-TestClient {
     return $true
 }
 
-[void](Invoke-TestClient -ExtraArgs @('status') -Description "status query")
-[void](Invoke-TestClient -ExtraArgs @('display', 'ready') -Description "display 'ready'")
+$allSmokePassed = $true
+if (-not (Invoke-TestClient -ExtraArgs @('status') -Description "status query")) { $allSmokePassed = $false }
+if (-not (Invoke-TestClient -ExtraArgs @('display', 'ready') -Description "display 'ready'")) { $allSmokePassed = $false }
+
+if ($RunTypingTest) {
+    Write-Host ""
+    Write-Host "Optional test: typing 'hello' as a real keystroke." -ForegroundColor Yellow
+    Write-Host "    The keystrokes appear on whatever PC the dongle's USB-A plug is in." -ForegroundColor DarkGray
+    Write-Host "    Focus a disposable text field on that PC before continuing." -ForegroundColor DarkGray
+    Read-UserConfirmation "Press Enter when a disposable text field is focused on the host PC."
+
+    if (-not (Invoke-TestClient -ExtraArgs @('type', 'hello') -Description "type 'hello'")) { $allSmokePassed = $false }
+} else {
+    Write-Skip "Skipping real HID typing test. Pass -RunTypingTest to enable it."
+}
 
 Write-Host ""
-Write-Host "Final test: typing 'hello' as a real keystroke." -ForegroundColor Yellow
-Write-Host "    The keystrokes appear on whatever PC the dongle's USB-A plug is in." -ForegroundColor DarkGray
-Write-Host "    Open a text editor / Notepad on that PC and click into it before continuing." -ForegroundColor DarkGray
-Pause-ForUser "Press Enter when a text field is focused on the host PC."
-
-[void](Invoke-TestClient -ExtraArgs @('type', 'hello') -Description "type 'hello'")
-
-Write-Host ""
-Write-Host "Done. The dongle is flashed, paired, and verified." -ForegroundColor Green
+if ($allSmokePassed) {
+    Write-Host "Done. The dongle is flashed and verified." -ForegroundColor Green
+} else {
+    Write-WarnMsg "Done flashing, but one or more smoke tests failed. See output above."
+    exit 2
+}

@@ -28,7 +28,7 @@ powershell -ExecutionPolicy Bypass -File scripts/dev-env-setup.ps1
   desktops a generic USB BT 4.0+ adapter works).
 - VS Code with the **C# Dev Kit** extension, or Visual Studio 2022+.
 - An AI backend — see [ai-setup.md](ai-setup.md).
-- The dongle, flashed and paired — see [hardware-setup.md](hardware-setup.md).
+- The dongle, flashed and advertising — see [hardware-setup.md](hardware-setup.md).
 
 ### 2. Build & run
 

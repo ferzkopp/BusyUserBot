@@ -80,5 +80,5 @@ public sealed class LoopConfig
     /// Timeout budget for each AI request (planner/validator/executor and
     /// per-step validation), in seconds.
     /// </summary>
-    public int AiTimeoutSeconds { get; set; } = 60;
+    public int AiTimeoutSeconds { get; set; } = 180;
 }

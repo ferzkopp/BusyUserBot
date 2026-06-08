@@ -75,7 +75,7 @@ ESP32-S3 board with native USB OTG, Bluetooth LE, and a small on-board
 - The ESP32-S3's native USB-OTG lets it enumerate as a real USB HID
   keyboard + mouse — no extra chips, no special host drivers.
 - Wi-Fi and BLE are both available; this project uses **BLE GATT** for the
-  controller link (low overhead, encrypted/bonded, no IP setup).
+   controller link (low overhead, no IP setup).
 - The on-board display shows status (advertising / connected / last
   command) and accepts an optional `display` action for debugging.
 
@@ -87,7 +87,7 @@ ESP32-S3 board with native USB OTG, Bluetooth LE, and a small on-board
 | [docs/](docs/) | Setup, protocol and architecture documentation. |
 | [docs/control-flow.md](docs/control-flow.md) | Planner → Validator → Executor open-loop architecture and playbook schema. |
 | [docs/ai-setup.md](docs/ai-setup.md) | LM Studio and Azure OpenAI setup, with model recommendations per hardware tier. |
-| [docs/hardware-setup.md](docs/hardware-setup.md) | Flashing and pairing the T-Dongle-S3. |
+| [docs/hardware-setup.md](docs/hardware-setup.md) | Flashing and smoke-testing the T-Dongle-S3. |
 | [docs/controller-setup.md](docs/controller-setup.md) | Building, configuring and running the .NET controller. |
 | [docs/protocol.md](docs/protocol.md) | BLE GATT wire protocol between controller and dongle. |
 | [docs/scripts.md](docs/scripts.md) | Reference for `dev-env-setup.ps1` and `flash-dongle.ps1`. |
@@ -107,9 +107,9 @@ powershell -ExecutionPolicy Bypass -File scripts/dev-env-setup.ps1
 
 Then, in order:
 
-1. **Flash the dongle and pair it once with Windows.**
+1. **Flash the dongle and verify it is advertising.**
    Walk through [docs/hardware-setup.md](docs/hardware-setup.md), or run the
-   guided flasher script — see [docs/scripts.md](docs/scripts.md#flash-donglep1--interactive-flash--pair--smoke-test).
+   guided flasher script — see [docs/scripts.md](docs/scripts.md#flash-dongleps1--interactive-flash--smoke-test).
 2. **Set up an AI backend.**
    Pick LM Studio (local, default) or Azure OpenAI — see
    [docs/ai-setup.md](docs/ai-setup.md). Model recommendations cover everything
@@ -128,9 +128,8 @@ Then, in order:
   refuse destructive actions, but **the controller is not a sandbox**. Run
   it on a test account, throwaway VM, or dedicated test machine — never on
   a workstation with valuable unsaved work.
-- The BLE link is encrypted and bonded; the dongle additionally requires a
-  shared `DEVICE_TOKEN` on every fresh connection (see
-  [docs/protocol.md](docs/protocol.md)).
+- The dongle requires a shared `DEVICE_TOKEN` on every fresh BLE connection
+   before it accepts HID commands (see [docs/protocol.md](docs/protocol.md)).
 - Stopping the controller (tray-click → *Stop and show*) cancels the
   current iteration, drops the BLE link, and the firmware releases any
   held keys/buttons on disconnect.

@@ -11,7 +11,6 @@ Usage examples (PowerShell):
     python tools/test_client.py --name BusyUserBot --token devtoken key CTRL S
     python tools/test_client.py --name BusyUserBot --token devtoken display "ready"
 
-Pair the dongle once via Windows Settings > Bluetooth before running this.
 The dongle is a real USB HID device, so whatever PC its USB-C plug is in will
 receive the input — not necessarily the same PC running this script.
 """
@@ -23,7 +22,7 @@ import asyncio
 import json
 import struct
 import sys
-from typing import Any
+from typing import Any, Callable
 
 from bleak import BleakClient, BleakScanner
 
@@ -40,20 +39,26 @@ class Dongle:
         self._rx_buf = bytearray()
         self._rx_expected = 0
         self._response: asyncio.Future[str] | None = None
+        self._response_filter: Callable[[str], bool] | None = None
 
     async def __aenter__(self) -> "Dongle":
         await self._client.connect()
         await self._client.start_notify(STAT_UUID, self._on_notify)
-        # Auth: triggers Windows pairing prompt the first time.
+        # Auth gates command execution. The hello notification is useful when
+        # it arrives, but some Windows/Bleak stacks miss it after a fresh
+        # no-pairing connection, so do not make that notification mandatory.
         loop = asyncio.get_running_loop()
         self._response = loop.create_future()
+        self._response_filter = None
         await self._client.write_gatt_char(AUTH_UUID, self._token.encode("utf-8"), response=True)
         try:
-            hello = await asyncio.wait_for(self._response, timeout=5.0)
+            hello = await asyncio.wait_for(asyncio.shield(self._response), timeout=1.0)
+            self._response = None
         except asyncio.TimeoutError:
-            raise RuntimeError("timed out waiting for auth response")
-        if not json.loads(hello).get("ok"):
-            raise RuntimeError(f"auth rejected: {hello}")
+            self._response = None
+        else:
+            if not json.loads(hello).get("ok"):
+                raise RuntimeError(f"auth rejected: {hello}")
         return self
 
     async def __aexit__(self, *_: Any) -> None:
@@ -81,7 +86,8 @@ class Dongle:
                 payload = bytes(self._rx_buf).decode("utf-8", errors="replace")
                 self._rx_buf.clear()
                 self._rx_expected = 0
-                if self._response and not self._response.done():
+                if (self._response and not self._response.done()
+                    and (self._response_filter is None or self._response_filter(payload))):
                     self._response.set_result(payload)
 
     async def send(self, actions: list[dict]) -> dict:
@@ -89,12 +95,49 @@ class Dongle:
         framed = struct.pack("<H", len(body)) + body
         loop = asyncio.get_running_loop()
         self._response = loop.create_future()
+        self._response_filter = _is_command_response
         # Chunk to a safe ATT payload; the firmware reassembles.
         chunk = 180
         for off in range(0, len(framed), chunk):
-            await self._client.write_gatt_char(CMD_UUID, framed[off:off + chunk], response=False)
-        raw = await asyncio.wait_for(self._response, timeout=15.0)
-        return json.loads(raw)
+            await self._client.write_gatt_char(CMD_UUID, framed[off:off + chunk], response=True)
+        try:
+            raw = await asyncio.wait_for(self._response, timeout=5.0)
+            return json.loads(raw)
+        except asyncio.TimeoutError:
+            try:
+                raw = await self._read_latest_status()
+            except Exception as exc:
+                raise RuntimeError(
+                    f"timeout waiting for dongle response; STATUS read fallback failed: "
+                    f"{type(exc).__name__} {exc}"
+                ) from exc
+            if raw and _is_command_response(raw):
+                return json.loads(raw)
+            raise RuntimeError("timeout waiting for dongle response")
+        finally:
+            self._response = None
+            self._response_filter = None
+
+    async def _read_latest_status(self) -> str | None:
+        data = await self._client.read_gatt_char(STAT_UUID)
+        return _decode_framed_payload(bytes(data))
+
+
+def _is_command_response(payload: str) -> bool:
+    try:
+        msg = json.loads(payload)
+    except json.JSONDecodeError:
+        return True
+    return "firmware" not in msg
+
+
+def _decode_framed_payload(data: bytes) -> str | None:
+    if len(data) < 2:
+        return None
+    expected = struct.unpack("<H", data[:2])[0]
+    if expected <= 0 or len(data) < expected + 2:
+        return None
+    return data[2:2 + expected].decode("utf-8", errors="replace")
 
 
 async def find_device(name: str, address: str | None) -> str:
@@ -105,14 +148,14 @@ async def find_device(name: str, address: str | None) -> str:
     for d in devs:
         if d.name and d.name.lower() == name.lower():
             return d.address
-    raise SystemExit(f"BLE device '{name}' not found. Pair it once in Windows first.")
+    raise SystemExit(f"BLE device '{name}' not found. Make sure the dongle is powered and advertising.")
 
 
 async def run(args: argparse.Namespace) -> int:
     address = await find_device(args.name, args.address)
 
     if args.cmd == "status":
-        # No GATT 'status' read; the auth hello + a no-op send proves liveness.
+        # No GATT 'status' read; service discovery proves BLE visibility.
         async with BleakClient(address) as raw:
             # `client.services` is the modern Bleak API (>= 0.20). The older
             # `get_services()` coroutine was removed.
@@ -161,7 +204,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return asyncio.run(run(args))
     except Exception as e:
-        print(f"error: {e}", file=sys.stderr)
+        detail = str(e) or type(e).__name__
+        print(f"error: {detail}", file=sys.stderr)
         return 2
 
 

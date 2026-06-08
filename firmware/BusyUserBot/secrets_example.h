@@ -8,5 +8,5 @@
 // Pick something long and random.
 #define DEVICE_TOKEN "change-me-to-a-long-random-string"
 
-// BLE advertised name. Shows up in Windows' Bluetooth pairing dialog.
+// BLE advertised name. The controller/test client scan for this name.
 #define DEVICE_NAME "BusyUserBot"

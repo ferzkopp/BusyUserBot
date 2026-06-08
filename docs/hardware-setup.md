@@ -34,8 +34,8 @@ Upstream board documentation:
 
 ### Quick start (recommended)
 
-The guided flasher does autodetection, compile, upload, pair and smoke
-test in one go:
+The guided flasher does autodetection, compile, upload, and smoke test in
+one go:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/flash-dongle.ps1
@@ -50,10 +50,7 @@ It will:
    `esp32:esp32:lilygo_t_dongle_s3` FQBN, falling back to a generic ESP32-S3
    board with explicit build properties if the lilygo variant isn't
    recognised.
-3. Open the Windows Bluetooth pairing dialog so you can add the dongle
-   (advertises as `BusyUserBot`, Just-Works pairing, no PIN). One pair per
-   PC; the bond persists.
-4. Run [`tools/test_client.py`](../tools/test_client.py) for a `status` →
+3. Run [`tools/test_client.py`](../tools/test_client.py) for a `status` →
    `display "ready"` → `type "hello"` smoke test.
 
 The script reads `secrets.h` and the controller's `settings.json` for the
@@ -79,15 +76,15 @@ You can confirm download mode visually by watching the on-board display:
 - **Plug in *without* BOOT → screen shows a status message.** The sketch
   is running normally; you are *not* in download mode.
 
-### First-time pairing on Windows
+### Windows Bluetooth pairing
 
-**Settings → Bluetooth & devices → Add device → Bluetooth → `BusyUserBot`**.
-Just-Works pairing, no PIN. The bond persists; subsequent connections from
-the controller are silent.
+Do not pair the dongle in Windows Bluetooth settings. The controller and
+test client connect to the advertising BLE device by name, then authenticate
+with `DEVICE_TOKEN`.
 
-If you re-flash the dongle and later see the controller fail to connect,
-remove the device from Windows Bluetooth settings and pair again — the
-GATT cache for the old firmware can become stale.
+If Windows already shows `BusyUserBot` stuck on **Connecting...**, remove it
+from Bluetooth settings, power-cycle the dongle, and run the controller or
+test client directly.
 
 ---
 
@@ -173,9 +170,7 @@ $fqbn = "esp32:esp32:esp32s3:USBMode=default,CDCOnBoot=cdc,PSRAM=disabled,FlashS
 After upload, unplug and replug the dongle. The display should show
 `BLE / advertising / BusyUserBot`.
 
-#### 4. Pair (see [First-time pairing on Windows](#first-time-pairing-on-windows))
-
-#### 5. Smoke test
+#### 4. Smoke test
 
 ```powershell
 python tools/test_client.py --name BusyUserBot --token <your-token> status
@@ -223,7 +218,7 @@ source of truth.
 | `arduino-cli` doesn't list a COM port | Hold **BOOT** while plugging in to force download mode. |
 | New COM port doesn't appear at all | Plug directly into the PC, not into a hub / monitor / KVM / keyboard pass-through; reseat the fold-out USB-A plug; try a different port; if the screen also stays dark without BOOT, the dongle isn't getting power. |
 | Dongle stuck on "boot" | BLE init crashed. Open a serial monitor on the COM port for the panic trace. |
-| `BusyUserBot` not in Windows pairing dialog | Not advertising. Reset the dongle; check the display says `advertising`. Make sure no other PC is holding the connection. |
-| Pairing succeeds but controller can't connect | Stale Windows pairing after a re-flash. Remove the device in Bluetooth settings and pair again. |
+| `BusyUserBot` not found by the controller/test client | Not advertising. Reset the dongle; check the display says `advertising`. Make sure no other PC is holding the connection. |
+| Windows shows `BusyUserBot` stuck on `Connecting...` | Remove it from Bluetooth settings and do not pair it again; the app connects directly by BLE name and token. |
 | Keys appear stuck | Disconnect or power-cycle — the firmware releases all keys/buttons on disconnect. |
 | `auth rejected` | `DEVICE_TOKEN` in `secrets.h` doesn't match the controller's settings. |

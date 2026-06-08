@@ -7,7 +7,7 @@ in-box `powershell.exe` and PowerShell 7+ (`pwsh.exe`).
 | Script | Purpose |
 | ------ | ------- |
 | [`dev-env-setup.ps1`](#dev-env-setupps1--bootstrap-the-dev-environment) | One-shot install of the full toolchain (winget + arduino-cli + libs + optional LM Studio). |
-| [`flash-dongle.ps1`](#flash-donglep1--interactive-flash--pair--smoke-test) | Guided compile → upload → pair → smoke test of the dongle firmware. |
+| [`flash-dongle.ps1`](#flash-donglep1--interactive-flash--smoke-test) | Guided compile → upload → smoke test of the dongle firmware. |
 
 See also [hardware-setup.md](hardware-setup.md),
 [controller-setup.md](controller-setup.md), and
@@ -83,9 +83,9 @@ powershell -ExecutionPolicy Bypass -File scripts/dev-env-setup.ps1 -InstallLMStu
 These steps are intentionally manual because they require choices or are
 not safely scriptable:
 
-- **Pairing the dongle in Windows** — done once via Settings → Bluetooth →
-  Add device. See
-  [hardware-setup.md](hardware-setup.md#first-time-pairing-on-windows).
+- **Pairing the dongle in Windows** — not required. The controller connects
+  directly to the advertising BLE device by name and authenticates with
+  `DEVICE_TOKEN`.
 - **Controller `appsettings.json`** — written automatically by the
   controller to `%APPDATA%\BusyUserBot\settings.json`.
 
@@ -117,7 +117,7 @@ is required). The script:
 
 ---
 
-## `flash-dongle.ps1` — interactive flash + pair + smoke test
+## `flash-dongle.ps1` — interactive flash + smoke test
 
 Walks through the manual flashing steps in
 [hardware-setup.md](hardware-setup.md#manual-flashing-without-flash-dongleps1):
@@ -128,9 +128,7 @@ Walks through the manual flashing steps in
    `esp32:esp32:lilygo_t_dongle_s3`, falling back to the generic
    `esp32:esp32:esp32s3` board with explicit build properties if the
    lilygo variant isn't recognised.
-3. **Open the Windows Bluetooth pairing dialog** (`ms-settings:bluetooth`)
-   so you can pair the dongle once per PC.
-4. **Run the Python test client** ([`tools/test_client.py`](../tools/test_client.py))
+3. **Run the Python test client** ([`tools/test_client.py`](../tools/test_client.py))
    for `status`, `display "ready"`, and `type "hello"`.
 
 Each step pauses for confirmation; abort at any prompt with Ctrl+C. The
@@ -146,11 +144,14 @@ generate / update those files.
 # Full guided run from the repo root.
 powershell -ExecutionPolicy Bypass -File scripts/flash-dongle.ps1
 
-# Already know the COM port and the dongle is already paired:
-powershell -ExecutionPolicy Bypass -File scripts/flash-dongle.ps1 -Port COM7 -SkipPair
+# Already know the COM port:
+powershell -ExecutionPolicy Bypass -File scripts/flash-dongle.ps1 -Port COM7
 
-# Just flash; no pairing prompt, no smoke test.
-powershell -ExecutionPolicy Bypass -File scripts/flash-dongle.ps1 -Port COM7 -SkipPair -SkipSmokeTest
+# Just flash; no smoke test.
+powershell -ExecutionPolicy Bypass -File scripts/flash-dongle.ps1 -Port COM7 -SkipSmokeTest
+
+# Include the optional real HID typing test.
+powershell -ExecutionPolicy Bypass -File scripts/flash-dongle.ps1 -Port COM7 -RunTypingTest
 ```
 
 ### Flags
@@ -159,8 +160,9 @@ powershell -ExecutionPolicy Bypass -File scripts/flash-dongle.ps1 -Port COM7 -Sk
 | ---------------- | ------ |
 | `-Port <COMx>`   | Skip COM-port autodetection and use this port directly. Overrides any cached port. |
 | `-NoCache`       | Don't read or write the cached COM port. Forces full autodetection even if a previous run remembered a port. |
-| `-SkipPair`      | Don't open the Windows Bluetooth pairing dialog. |
+| `-SkipPair`      | Deprecated; Windows Bluetooth pairing is no longer required. |
 | `-SkipSmokeTest` | Don't run [`tools/test_client.py`](../tools/test_client.py) at the end. |
+| `-RunTypingTest` | Also run a real HID typing test. Off by default because it types into whichever window is focused on the dongle's USB host. |
 | `-DeviceName`    | BLE name to scan for in the smoke test. Defaults to `Dongle.Name` from `settings.json`, then `DEVICE_NAME` from `secrets.h`, then `BusyUserBot`. |
 
 ### Port caching
