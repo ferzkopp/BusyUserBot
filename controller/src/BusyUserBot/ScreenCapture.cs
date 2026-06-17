@@ -35,6 +35,23 @@ public static class ScreenCapture
         }
 
         /// <summary>
+        /// Map a real screen pixel coordinate into the sent-image coordinate
+        /// space (the inverse of <see cref="MapPoint"/>) and clamp to the sent
+        /// image bounds. Used to tell the model where the cursor currently is
+        /// in the same coordinates it authors its actions against.
+        /// </summary>
+        public (int x, int y) MapPointToImage(int x, int y)
+        {
+            int ix = ScaleX > 0 ? (int)Math.Round(x / ScaleX, MidpointRounding.AwayFromZero) : x;
+            int iy = ScaleY > 0 ? (int)Math.Round(y / ScaleY, MidpointRounding.AwayFromZero) : y;
+            if (ix < 0) ix = 0;
+            if (iy < 0) iy = 0;
+            if (SentWidth  > 0 && ix > SentWidth  - 1) ix = SentWidth  - 1;
+            if (SentHeight > 0 && iy > SentHeight - 1) iy = SentHeight - 1;
+            return (ix, iy);
+        }
+
+        /// <summary>
         /// Returns a copy of <paramref name="action"/> whose x/y (if present)
         /// have been scaled from sent-image coordinates to real screen
         /// coordinates and clamped to the screen.

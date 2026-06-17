@@ -140,15 +140,22 @@ Output strict JSON only — no prose, no Markdown fences:
   "done": false
 }
 
-Coordinates are pixels in YOUR screenshot (dimensions provided). Click centers.
-Prefer keyboard shortcuts over mouse hunting. Never invent unseen coordinates.
+Coordinates are pixels in YOUR screenshot — its width and height are given in
+the user message, and the cursor's current pixel in that same image is given
+too. ALWAYS express x,y in this image's pixel grid (top-left = 0,0; x grows
+right, y grows down). The controller automatically converts your image
+coordinates to the real screen, so NEVER rescale, NEVER guess the physical
+screen resolution, and NEVER output physical-screen coordinates — work purely
+in the image you are shown. Click centres. Prefer keyboard shortcuts over
+mouse hunting. Never invent unseen coordinates.
 
 Clicking precisely (READ THIS BEFORE EMITTING ANY `move`):
-- The screenshot you receive is usually DOWN-SCALED from a much larger
-  physical screen (e.g. 1920x1080 sent from a 3840x2160 display). Tiny
-  controls in the image (close buttons, taskbar icons, scrollbar arrows)
-  are often only 8-20 px wide, and a 5 px error in your output becomes a
-  10+ px error on the real screen. Look hard before committing to (x,y).
+- The screenshot may be a scaled-down view of the desktop, so tiny controls
+  in the image (close buttons, taskbar icons, scrollbar arrows) are often
+  only 8-20 px wide, and a few pixels of error in your output is magnified
+  once the controller maps it onto the real screen. Look hard before
+  committing to (x,y), and aim for the exact centre of the target in the
+  image.
 - Aim for the GEOMETRIC CENTRE of the target's clickable rectangle, NOT:
     * the centre of its TEXT label (text usually sits above the optical
       centre of a button),
@@ -184,6 +191,7 @@ Supported action types and protocol constraints:
   target will cause the click to land in the wrong place. Omit "target"
   for relative moves (small adjustments).
 - click/down/up: button in {left,right,middle}; click count defaults to 1.
+  Set count:2 for a double-click (e.g. opening a desktop icon or list item).
 - scroll: dy int (positive=up, negative=down).
 - type: ASCII text only (US keyboard layout).
 - key: non-empty keys[] chord (press together, release together).
@@ -377,6 +385,8 @@ the controller before sending to hardware.
         int stepCount,
         int screenW,
         int screenH,
+        int cursorX,
+        int cursorY,
         string? lastFailure)
     {
         var sb = new StringBuilder();
@@ -400,6 +410,7 @@ the controller before sending to hardware.
         sb.AppendLine();
         sb.AppendLine("SCREEN:");
         sb.AppendLine($"  width={screenW}px height={screenH}px");
+        sb.AppendLine($"  mouse cursor is currently at x={cursorX}px y={cursorY}px (in this image's coordinates) — use this as the starting point and do not guess it.");
         sb.AppendLine("  The image below is the current desktop. Reply with ACTION-MODE JSON only.");
         return sb.ToString();
     }

@@ -11,11 +11,13 @@ namespace BusyUserBot;
 ///      not the real screen. <see cref="ScreenCapture.Capture.MapActions"/>
 ///      converts those back to physical screen pixels.
 ///
-///   2. <b>Display DPI scaling</b> — the dongle emits relative HID mickeys,
-///      and Windows multiplies each mickey by the active monitor's effective
-///      scale factor (e.g. 1.5× at 150% DPI) before moving the cursor. We
-///      pre-divide by that scale so the slam-to-origin + walk approximation
-///      of absolute positioning lands on the requested physical pixel.
+///   2. <b>Display DPI scaling + calibration</b> — the dongle emits relative
+///      HID mickeys, and Windows multiplies each mickey by the active monitor's
+///      effective scale factor (e.g. 1.5× at 150% DPI) before moving the cursor.
+///      We pre-divide by that scale so the slam-to-origin + walk approximation
+///      of absolute positioning lands on the requested physical pixel. A
+///      calibration gain factor (measured during calibration mode) further
+///      corrects for dongle characteristics and Windows pointer settings.
 ///      See <see cref="HidScaler"/>.
 ///
 /// The third "factor" — Windows mouse settings (Enhance pointer precision,
@@ -34,14 +36,14 @@ internal static class HidCoordinatePipeline
     /// <summary>
     /// Run the full image → screen → HID pipeline. Returns both the
     /// intermediate screen-pixel actions (useful for logging "where the
-    /// model wanted to click") and the DPI-compensated actions to send to
-    /// the firmware.
+    /// model wanted to click") and the DPI-compensated + calibrated actions
+    /// to send to the firmware.
     /// </summary>
-    public static Result Transform(ScreenCapture.Capture shot, IReadOnlyList<HidAction> actions)
+    public static Result Transform(ScreenCapture.Capture shot, IReadOnlyList<HidAction> actions, double calibrationGain = 1.0)
     {
         var screen = shot.MapActions(actions);
         var dpi = HidScaler.GetPrimaryScale();
-        var hid = HidScaler.CompensateForDpi(screen, dpi);
+        var hid = HidScaler.CompensateForDpi(screen, dpi, calibrationGain);
         return new Result(screen, hid, dpi);
     }
 }

@@ -72,12 +72,12 @@ public sealed class BleHardwareClient : IHardwareClient, IDisposable
     private GattCharacteristic? _cmdChar;
     private GattCharacteristic? _statChar;
 
-    // Notification reassembly.
+    // Notification reassembly. The dongle only sends one notification: the
+    // AUTH handshake "hello". Commands are fire-and-forget with no response.
     private readonly object _rxLock = new();
     private readonly List<byte> _rxBuf = new();
     private int _rxExpected;
     private TaskCompletionSource<string>? _pendingResponse;
-    private Func<string, bool>? _pendingResponseFilter;
     private bool _authed;
 
     public BleHardwareClient(DongleConfig cfg, Action<string> log, Action<DongleConfig>? persistConfig = null)
@@ -246,9 +246,9 @@ public sealed class BleHardwareClient : IHardwareClient, IDisposable
                 return false;
             }
 
-            // 3. Subscribe to notifications. Best-effort: the loop uses them to
-            //    read executed counts, but the connect handshake below no longer
-            //    depends on them.
+            // 3. Subscribe to notifications. Best-effort: the only notification
+            //    the dongle ever sends is the AUTH hello below. Commands are
+            //    fire-and-forget, so a missing subscription never fails a send.
             step = "subscribe-notify";
             _statChar.ValueChanged += OnNotify;
             try
@@ -359,57 +359,22 @@ public sealed class BleHardwareClient : IHardwareClient, IDisposable
         BinaryPrimitives.WriteUInt16LittleEndian(framed.AsSpan(0, 2), (ushort)body.Length);
         System.Buffer.BlockCopy(body, 0, framed, 2, body.Length);
 
-        _pendingResponse = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
-        _pendingResponseFilter = IsCommandResponse;
-
-        // 180 bytes is safe for ATT_MTU=185+ (which the firmware requests at 247).
-        // The firmware reassembles across writes. Use acknowledged writes here;
-        // some Windows BLE stacks silently drop WriteWithoutResponse after a
-        // cache-stale reconnect path.
+        // Fire-and-forget (UDP-style). After the AUTH handshake the dongle never
+        // answers a command, so we stream the framed payload with unacknowledged
+        // writes and report success as soon as the bytes are handed to the BLE
+        // stack. 180 bytes is safe for ATT_MTU=185+ (firmware requests 247) and
+        // the firmware reassembles across writes.
         const int chunk = 180;
         for (int off = 0; off < framed.Length; off += chunk)
         {
             int len = Math.Min(chunk, framed.Length - off);
             var slice = framed.AsSpan(off, len).ToArray();
-            var status = await WriteAsync(_cmdChar, slice, withResponse: true, ct);
+            var status = await WriteAsync(_cmdChar, slice, withResponse: false, ct);
             if (status != GattCommunicationStatus.Success)
-            {
-                _pendingResponse = null;
-                _pendingResponseFilter = null;
                 return new HwResponse(false, 0, $"write failed: {status}");
-            }
         }
 
-        // Every chunk above was a Write-With-Response, so reaching this point
-        // means the dongle ATT-acknowledged receipt of the whole command. The
-        // STATUS notification only adds the executed count — nice to have, but
-        // some Windows BLE stacks drop notifications after a firmware reflash,
-        // so we never fail a command just because the notification is missing.
-        try
-        {
-            using var to = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            to.CancelAfter(TimeSpan.FromSeconds(4));
-            var raw = await _pendingResponse.Task.WaitAsync(to.Token);
-            return ParseHwResponse(raw);
-        }
-        catch (OperationCanceledException)
-        {
-            var raw = await ReadLatestStatusAsync(ct);
-            if (raw is not null && IsCommandResponse(raw))
-            {
-                _log($"BLE read: {raw}");
-                return ParseHwResponse(raw);
-            }
-            // No notification and no readable STATUS: the writes were still
-            // acknowledged, so treat the command as received and executed.
-            _log("BLE: no STATUS response; command was acknowledged at the BLE layer, assuming executed.");
-            return new HwResponse(true, actions.Count, null);
-        }
-        finally
-        {
-            _pendingResponse = null;
-            _pendingResponseFilter = null;
-        }
+        return new HwResponse(true, actions.Count, null);
     }
 
     public Task ResetAsync(CancellationToken ct)
@@ -428,7 +393,6 @@ public sealed class BleHardwareClient : IHardwareClient, IDisposable
         _device = null;
         _authChar = _cmdChar = _statChar = null;
         _pendingResponse = null;
-        _pendingResponseFilter = null;
         lock (_rxLock)
         {
             _rxBuf.Clear();
@@ -582,49 +546,6 @@ public sealed class BleHardwareClient : IHardwareClient, IDisposable
         return await c.WriteValueAsync(writer.DetachBuffer(), opt).AsTask(ct);
     }
 
-    private async Task<string?> ReadLatestStatusAsync(CancellationToken ct)
-    {
-        if (_statChar is null) return null;
-
-        foreach (var mode in new[] { BluetoothCacheMode.Uncached, BluetoothCacheMode.Cached })
-        {
-            try
-            {
-                var result = await _statChar.ReadValueAsync(mode).AsTask(ct);
-                if (result.Status != GattCommunicationStatus.Success) continue;
-                var reader = DataReader.FromBuffer(result.Value);
-                var bytes = new byte[reader.UnconsumedBufferLength];
-                reader.ReadBytes(bytes);
-                var payload = DecodeSingleFramedPayload(bytes);
-                if (payload is not null) return payload;
-            }
-            catch (Exception ex)
-            {
-                _log($"BLE: STATUS read failed ({mode}, {ex.GetType().Name} 0x{ex.HResult:X8}).");
-            }
-        }
-
-        return null;
-    }
-
-    private static HwResponse ParseHwResponse(string raw)
-    {
-        using var doc = JsonDocument.Parse(raw);
-        var root = doc.RootElement;
-        bool ok = root.TryGetProperty("ok", out var okEl) && okEl.GetBoolean();
-        int executed = root.TryGetProperty("executed", out var exEl) && exEl.TryGetInt32(out var n) ? n : 0;
-        string? err = root.TryGetProperty("error", out var errEl) ? errEl.GetString() : null;
-        return new HwResponse(ok, executed, err);
-    }
-
-    private static string? DecodeSingleFramedPayload(byte[] bytes)
-    {
-        if (bytes.Length < 2) return null;
-        int expected = bytes[0] | (bytes[1] << 8);
-        if (expected <= 0 || bytes.Length < expected + 2) return null;
-        return Encoding.UTF8.GetString(bytes, 2, expected);
-    }
-
     private void OnConnectionChanged(BluetoothLEDevice sender, object args)
     {
         _log($"BLE: connection status = {sender.ConnectionStatus}");
@@ -666,24 +587,7 @@ public sealed class BleHardwareClient : IHardwareClient, IDisposable
         if (completePayload is not null)
         {
             _log($"BLE rx: {completePayload}");
-            if (_pendingResponse is not null
-                && (_pendingResponseFilter is null || _pendingResponseFilter(completePayload)))
-            {
-                _pendingResponse.TrySetResult(completePayload);
-            }
-        }
-    }
-
-    private static bool IsCommandResponse(string payload)
-    {
-        try
-        {
-            using var doc = JsonDocument.Parse(payload);
-            return !doc.RootElement.TryGetProperty("firmware", out _);
-        }
-        catch (JsonException)
-        {
-            return true;
+            _pendingResponse?.TrySetResult(completePayload);
         }
     }
 

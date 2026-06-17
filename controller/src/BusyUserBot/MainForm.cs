@@ -53,7 +53,7 @@ public sealed class MainForm : Form
     private const string TestHwLabel = "Test HW";
     private const string TestAiLabel = "Test AI";
     private const string TestMouseLabel = "Test mouse";
-    private const string TestAiMouseLabel = "AI Test Mouse";
+    private const string CalibrateMouseLabel = "Calibrate mouse";
     private const string StartLabel = "Start";
     private const string StopLabel = "Stop";
     private readonly Button _start = new() { Text = StartLabel };
@@ -61,14 +61,14 @@ public sealed class MainForm : Form
     private readonly Button _testHw = new() { Text = TestHwLabel };
     private readonly Button _testAi = new() { Text = TestAiLabel };
     private readonly Button _testMouse = new() { Text = TestMouseLabel, Enabled = false };
-    private readonly Button _testAiMouse = new() { Text = TestAiMouseLabel, Enabled = false };
+    private readonly Button _calibrateMouse = new() { Text = CalibrateMouseLabel, Enabled = false };
 
     // Status indicators sitting next to each test button: an animated spinner
     // while the test runs, a green check on success, a red cross on failure.
     private readonly Label _hwStatus = new();
     private readonly Label _aiStatus = new();
     private readonly Label _mouseStatus = new();
-    private readonly Label _aiMouseStatus = new();
+    private readonly Label _calibrateMouseStatus = new();
 
     private enum TestState { Idle, Running, Pass, Fail }
 
@@ -213,7 +213,10 @@ public sealed class MainForm : Form
             Padding = new Padding(16, 12, 16, 12),
             AutoSize = false,
         };
-        root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
+        // Let the label column grow to fit its widest caption (e.g. "Azure
+        // deployment:") instead of a fixed width that clips longer labels,
+        // especially once DPI scaling enlarges the font.
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
 
         const int rowH = 34;
@@ -231,9 +234,10 @@ public sealed class MainForm : Form
             var lbl = new Label
             {
                 Text = label,
+                AutoSize = true,
                 TextAlign = ContentAlignment.MiddleLeft,
                 Dock = DockStyle.Fill,
-                Padding = new Padding(0, 0, 6, 0),
+                Padding = new Padding(0, 0, 12, 0),
             };
             root.Controls.Add(lbl, 0, row);
             control.Dock = DockStyle.Fill;
@@ -251,10 +255,10 @@ public sealed class MainForm : Form
             {
                 Text = text,
                 Dock = DockStyle.Fill,
-                TextAlign = ContentAlignment.BottomLeft,
+                TextAlign = ContentAlignment.MiddleLeft,
                 Font = new Font(Font.FontFamily, Font.Size, FontStyle.Bold),
                 ForeColor = SystemColors.ControlDarkDark,
-                Padding = new Padding(0, 6, 0, 2),
+                Padding = new Padding(0, 0, 0, 0),
             };
             root.Controls.Add(lbl, 0, row);
             root.SetColumnSpan(lbl, 2);
@@ -340,14 +344,15 @@ public sealed class MainForm : Form
             WrapContents = false,
             Padding = new Padding(0, 4, 0, 4),
         };
-        var btnSize = new Size(85, 32);
         _browsePlaybook.Text = "Browse\u2026";
-        _browsePlaybook.Size = btnSize;
-        _reloadPlaybook.Size = btnSize;
-        _previewPlaybook.Size = btnSize;
-        _browsePlaybook.Margin = new Padding(0, 0, 6, 0);
-        _reloadPlaybook.Margin = new Padding(0, 0, 6, 0);
-        _previewPlaybook.Margin = new Padding(0, 0, 0, 0);
+        foreach (var btn in new[] { _browsePlaybook, _reloadPlaybook, _previewPlaybook })
+        {
+            btn.AutoSize = true;
+            btn.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            btn.MinimumSize = new Size(85, 32);
+            btn.Padding = new Padding(8, 0, 8, 0);
+            btn.Margin = new Padding(0, 0, 6, 0);
+        }
         _browsePlaybook.Click += OnBrowsePlaybook;
         _reloadPlaybook.Click += (_, _) => TryLoadPlaybook(silent: false);
         _previewPlaybook.Click += (_, _) => ShowPlaybookPreview();
@@ -365,7 +370,7 @@ public sealed class MainForm : Form
         _testHw.Click += OnTestHardwareClicked;
         _testAi.Click += OnTestAiClicked;
         _testMouse.Click += OnTestMouseClicked;
-        _testAiMouse.Click += OnTestAiMouseClicked;
+        _calibrateMouse.Click += OnCalibratMouseClicked;
 
         _start.Size = new Size(110, 40);
         _start.Font = new Font(_start.Font, FontStyle.Bold);
@@ -392,17 +397,17 @@ public sealed class MainForm : Form
             AutoScroll = true,
             Padding = new Padding(0, 6, 0, 6),
         };
-        _testHw.Size = new Size(130, 38);
-        _testAi.Size = new Size(110, 38);
-        _testMouse.Size = new Size(130, 38);
-        _testAiMouse.Size = new Size(150, 38);
-        _testHw.Margin = new Padding(0, 0, 4, 0);
-        _testAi.Margin = new Padding(0, 0, 4, 0);
-        _testMouse.Margin = new Padding(0, 0, 4, 0);
-        _testAiMouse.Margin = new Padding(0, 0, 4, 0);
+        foreach (var btn in new[] { _testHw, _testAi, _testMouse, _calibrateMouse })
+        {
+            btn.AutoSize = true;
+            btn.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            btn.MinimumSize = new Size(0, 38);
+            btn.Padding = new Padding(10, 0, 10, 0);
+            btn.Margin = new Padding(0, 0, 4, 0);
+        }
 
         // Configure the per-test status indicators (spinner / check / cross).
-        foreach (var status in new[] { _hwStatus, _aiStatus, _mouseStatus, _aiMouseStatus })
+        foreach (var status in new[] { _hwStatus, _aiStatus, _mouseStatus, _calibrateMouseStatus })
         {
             status.AutoSize = false;
             status.Size = new Size(24, 38);
@@ -418,10 +423,10 @@ public sealed class MainForm : Form
         testButtons.Controls.Add(_hwStatus);
         testButtons.Controls.Add(_testAi);
         testButtons.Controls.Add(_aiStatus);
+        testButtons.Controls.Add(_calibrateMouse);
+        testButtons.Controls.Add(_calibrateMouseStatus);
         testButtons.Controls.Add(_testMouse);
         testButtons.Controls.Add(_mouseStatus);
-        testButtons.Controls.Add(_testAiMouse);
-        testButtons.Controls.Add(_aiMouseStatus);
 
         AddRow("", startRow, height: 56);
         AddRow("Test:", testButtons, height: 58);
@@ -704,7 +709,7 @@ public sealed class MainForm : Form
         _start.Enabled = _hwTestPassed && _aiTestPassed;
         // Dependent test buttons.
         _testMouse.Enabled = _hwTestPassed;
-        _testAiMouse.Enabled = _hwTestPassed && _aiTestPassed;
+        _calibrateMouse.Enabled = _hwTestPassed;
     }
 
     // -------------------------------------------------------------------
@@ -712,7 +717,7 @@ public sealed class MainForm : Form
     // -------------------------------------------------------------------
 
     private IEnumerable<Label> AllStatusLabels
-        => new[] { _hwStatus, _aiStatus, _mouseStatus, _aiMouseStatus };
+        => new[] { _hwStatus, _aiStatus, _mouseStatus, _calibrateMouseStatus };
 
     /// <summary>Flag a test as in-progress and start the spinner animation.</summary>
     private void SetTestRunning(Label status)
@@ -834,6 +839,7 @@ public sealed class MainForm : Form
     {
         _testMouse.Enabled = false;
         SetTestRunning(_mouseStatus);
+        MouseTestDialog? dialog = null;
         try
         {
             // Reuse an already-connected hardware client (from a recent
@@ -862,47 +868,96 @@ public sealed class MainForm : Form
                 }
             }
 
-            Log("Mouse test: small wiggle (watch your cursor)\u2026");
+            Log("Mouse test: showing target dialog\u2026");
 
-            // Two laps around a small relative square plus a couple of
-            // wheel ticks. Relative moves so we don't slam to (0,0) and
-            // disorient the user; small magnitude so we don't move off-
-            // screen on tiny displays.
-            const int d = 60;
-            var actions = new List<HidAction>
-            {
-                new("move", X:  d, Y:  0, Absolute: false),
-                new("wait", Ms: 120),
-                new("move", X:  0, Y:  d, Absolute: false),
-                new("wait", Ms: 120),
-                new("move", X: -d, Y:  0, Absolute: false),
-                new("wait", Ms: 120),
-                new("move", X:  0, Y: -d, Absolute: false),
-                new("wait", Ms: 200),
-                new("scroll", Dy:  3),
-                new("wait", Ms: 150),
-                new("scroll", Dy: -3),
-            };
+            // Create and show the dialog at a random location on screen.
+            // The dialog logs each click it receives and closes itself once all
+            // three kinds (left, double, right) have been observed.
+            dialog = new MouseTestDialog(Log);
+            dialog.PlaceRandomly();
+            dialog.TopMost = true;      // Keep dialog on top
+            dialog.Show();
+            dialog.Activate();          // Activate the dialog window
+            dialog.BringToFront();      // Ensure dialog is in front
+            dialog.Focus();             // Give focus to the dialog so it receives clicks
+            
+            // Give the dialog time to fully appear and activate
+            await Task.Delay(500);
 
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-            try
+            // Get the center of the dialog in screen coordinates.
+            var dialogCenter = dialog.GetCenterPoint();
+            Log($"Mouse test: target at ({dialogCenter.X}, {dialogCenter.Y}), moving cursor\u2026");
+
+            // Use iterative positioning to move the cursor to the dialog center.
+            bool reached = await MousePositioner.MoveToAsync(
+                hw,
+                dialogCenter.X,
+                dialogCenter.Y,
+                calibrationGain: _cfg.Mouse.CalibrationGain,
+                log: (msg) => Log($"  {msg}"),
+                ct: CancellationToken.None);
+
+            if (!reached)
             {
-                var resp = await hw.SendAsync(actions, cts.Token);
-                if (resp.Ok)
+                Log("Mouse test: failed to move to target position");
+                SetTestResult(_mouseStatus, false);
+                return;
+            }
+
+            Log("Mouse test: cursor moved to target");
+
+            // Send all three click types. The dialog records each one and
+            // closes itself once all three have arrived.
+            Log("Mouse test: [1/3] sending LEFT SINGLE CLICK\u2026");
+            await SendClick(hw, "click", "left", 1);
+            await Task.Delay(600);  // let the OS register the single click distinctly
+
+            Log("Mouse test: [2/3] sending LEFT DOUBLE CLICK\u2026");
+            await SendClick(hw, "click", "left", 2);
+            await Task.Delay(600);
+
+            Log("Mouse test: [3/3] sending RIGHT CLICK\u2026");
+            await SendClick(hw, "click", "right", 1);
+
+            // Wait (up to 15s) for the dialog to report all three click types.
+            Log("Mouse test: waiting for dialog to confirm all click types\u2026");
+            const int clickTimeoutSeconds = 15;
+            using var waitCts = new CancellationTokenSource(TimeSpan.FromSeconds(clickTimeoutSeconds));
+            while (!dialog.IsDisposed && !dialog.AllReceived)
+            {
+                try
                 {
-                    Log($"Mouse test: dongle executed {resp.Executed}/{actions.Count} actions");
-                    SetTestResult(_mouseStatus, true);
+                    await Task.Delay(100, waitCts.Token);
                 }
-                else
+                catch (OperationCanceledException)
                 {
-                    Log($"Mouse test: dongle reported failure after {resp.Executed} action(s): {resp.Error}");
-                    SetTestResult(_mouseStatus, false);
+                    break;
                 }
             }
-            finally
+
+            // Report results based on which click types the dialog observed.
+            var clickResults = new List<string>();
+            if (dialog.LeftClicked) clickResults.Add("left");
+            if (dialog.DoubleClicked) clickResults.Add("double");
+            if (dialog.RightClicked) clickResults.Add("right");
+
+            if (dialog.AllReceived)
             {
-                if (ownsClient) (hw as IDisposable)?.Dispose();
+                Log("Mouse test: ✓ All 3 click types received: left, double, right");
+                SetTestResult(_mouseStatus, true);
             }
+            else if (clickResults.Count > 0)
+            {
+                Log($"Mouse test: ⚠ Partial ({clickResults.Count}/3): {string.Join(", ", clickResults)}");
+                SetTestResult(_mouseStatus, false);
+            }
+            else
+            {
+                Log("Mouse test: ✗ No click types detected");
+                SetTestResult(_mouseStatus, false);
+            }
+
+            if (ownsClient) (hw as IDisposable)?.Dispose();
         }
         catch (Exception ex)
         {
@@ -911,7 +966,38 @@ public sealed class MainForm : Form
         }
         finally
         {
+            // Clean up the dialog if it's still open.
+            if (dialog is not null && !dialog.IsDisposed)
+            {
+                try { dialog.Close(); } catch { }
+                try { dialog.Dispose(); } catch { }
+            }
             _testMouse.Enabled = true;
+        }
+    }
+
+    private async Task SendClick(
+        IHardwareClient hw,
+        string actionType,
+        string button,
+        int count)
+    {
+        try
+        {
+            var clickAction = new HidAction(actionType, Button: button, Count: count);
+            var clickActions = new List<HidAction> { clickAction };
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            var resp = await hw.SendAsync(clickActions, cts.Token);
+
+            if (!resp.Ok)
+                Log($"Mouse test: {button}x{count} send failed: {resp.Error}");
+            else
+                Log($"Mouse test: {button}x{count} sent to dongle");
+        }
+        catch (Exception ex)
+        {
+            Log($"Mouse test: {button}x{count} exception: {ex.Message}");
         }
     }
 
@@ -1017,22 +1103,18 @@ public sealed class MainForm : Form
     // model + coordinate mapping + HID mouse path.
     // -------------------------------------------------------------------
 
-    private async void OnTestAiMouseClicked(object? sender, EventArgs e)
-    {
-        const int MaxAttempts = 3;
+    // -------------------------------------------------------------------
+    // Calibrate mouse: measure cursor landing accuracy and store gain
+    // -------------------------------------------------------------------
 
+    private async void OnCalibratMouseClicked(object? sender, EventArgs e)
+    {
         BindToConfig();
         ConfigStore.Save(_cfg);
 
-        _testAiMouse.Text = TestAiMouseLabel;
-        _testAiMouse.Enabled = false;
-        SetTestRunning(_aiMouseStatus);
-
-        // Same external-cancellation hook as OnTestAiClicked so a model swap
-        // mid-test aborts the in-flight AI calls.
-        _aiTestCts?.Dispose();
-        _aiTestCts = new CancellationTokenSource();
-        var externalToken = _aiTestCts.Token;
+        _calibrateMouse.Text = CalibrateMouseLabel;
+        _calibrateMouse.Enabled = false;
+        SetTestRunning(_calibrateMouseStatus);
 
         // Hardware client (reuse the connected one from Test HW so we don't
         // churn the GATT cache).
@@ -1048,285 +1130,53 @@ public sealed class MainForm : Form
             ownsClient = true;
             try
             {
-                Log("AI mouse test: connecting hardware\u2026");
+                Log("Calibration: connecting hardware\u2026");
                 if (!await hw.ConnectAsync(CancellationToken.None))
                 {
-                    Log("AI mouse test: hardware connect failed");
-                    SetTestResult(_aiMouseStatus, false);
+                    Log("Calibration: hardware connect failed");
+                    SetTestResult(_calibrateMouseStatus, false);
                     (hw as IDisposable)?.Dispose();
-                    _testAiMouse.Enabled = true;
+                    _calibrateMouse.Enabled = true;
                     return;
                 }
             }
             catch (Exception ex)
             {
-                Log("AI mouse test: hardware connect failed: " + ex.Message);
-                SetTestResult(_aiMouseStatus, false);
+                Log("Calibration: hardware connect failed: " + ex.Message);
+                SetTestResult(_calibrateMouseStatus, false);
                 (hw as IDisposable)?.Dispose();
-                _testAiMouse.Enabled = true;
+                _calibrateMouse.Enabled = true;
                 return;
             }
         }
 
-        IAiEngine ai = _fakeAi ? new FakeAiEngine() : new OpenAiCompatibleEngine(_cfg.Ai, Log);
-        AiClickTargetForm? popup = null;
-        bool dismissed = false;
         try
         {
-            popup = new AiClickTargetForm();
-            popup.ButtonClicked += (_, _) => dismissed = true;
-            popup.Show(this);
-            popup.BringToFront();
-            // Give Windows a beat to actually paint the popup before we screenshot.
-            await Task.Delay(400);
+            Log("Calibration: starting cursor movement accuracy test\u2026");
+            bool ok = await MouseCalibrator.CalibrateAsync(
+                hw, _cfg.Mouse, Log, CancellationToken.None);
 
-            var btnRect = popup.DismissButtonScreenRect;
-            var popupRect = popup.Bounds;
-            var screenBounds = Screen.PrimaryScreen?.Bounds ?? Rectangle.Empty;
-            Log($"AI mouse test: screen={screenBounds.Width}x{screenBounds.Height}, popup screen rect={popupRect.X},{popupRect.Y} {popupRect.Width}x{popupRect.Height}");
-            Log($"AI mouse test: OK button screen rect={btnRect.X},{btnRect.Y} {btnRect.Width}x{btnRect.Height}, centre=({btnRect.X + btnRect.Width / 2},{btnRect.Y + btnRect.Height / 2})");
-
-            int attempt = 0;
-            while (attempt < MaxAttempts && !dismissed)
+            if (ok)
             {
-                attempt++;
-                Log($"AI mouse test: attempt {attempt}/{MaxAttempts} \u2014 capturing screen\u2026");
-                var shot = ScreenCapture.Grab();
-
-                using var cts = CancellationTokenSource.CreateLinkedTokenSource(externalToken);
-                cts.CancelAfter(TimeSpan.FromSeconds(Math.Max(10, _cfg.Loop.AiTimeoutSeconds)));
-
-                var sysPrompt = """
-You are running an end-to-end self-test of a "busy user" automation bot.
-The screenshot below contains a small standard-looking Windows dialog
-titled "Self-test" whose body reads "BusyUserBot self-test. Click OK
-to continue." The dialog has two buttons in its bottom-right corner:
-an enabled "OK" button and a greyed-out "Cancel" button. Your job is
-to click the "OK" button (NOT Cancel, NOT the title bar, NOT the body
-text).
-
-The dialog is placed at a random on-screen location — do not assume
-it is centred. Locate it visually first, then click.
-
-Output strict JSON only — no prose, no Markdown fences:
-{
-  "reasoning": "short note",
-  "actions": [
-    {"type":"move","x":<centre-x>,"y":<centre-y>,"absolute":true},
-    {"type":"click","button":"left"}
-  ],
-  "done": false
-}
-
-Rules:
-- Coordinates are pixels in the screenshot you receive (dimensions given
-  in the user message). Click the visual centre of the OK button.
-- Emit exactly one move + one click. No keyboard, no waits.
-- If you cannot see the OK button at all, reply with a single
-  {"type":"wait","ms":1} action and done=false; do not invent
-  coordinates.
-""";
-
-                var userPrompt =
-                    $"MODE: ACTION\n\n" +
-                    $"GOAL: click the OK button on the BusyUserBot Self-test dialog.\n\n" +
-                    $"SCREEN: width={shot.SentWidth}px height={shot.SentHeight}px\n" +
-                    $"Reply with ACTION-MODE JSON only.";
-
-                AiDecision decision;
-                try
-                {
-                    decision = await ai.GenerateActionsAsync(sysPrompt, userPrompt, shot, cts.Token);
-                }
-                catch (OperationCanceledException)
-                {
-                    Log($"AI mouse test: attempt {attempt} timed out after {Math.Max(10, _cfg.Loop.AiTimeoutSeconds)}s");
-                    continue;
-                }
-                catch (Exception ex)
-                {
-                    Log($"AI mouse test: attempt {attempt} AI call failed: {ex.Message}");
-                    continue;
-                }
-
-                if (decision.Actions.Count == 0)
-                {
-                    Log($"AI mouse test: attempt {attempt} \u2014 model returned no actions");
-                    continue;
-                }
-
-                // Run the unified image → screen → HID coordinate pipeline.
-                var pipeline = HidCoordinatePipeline.Transform(shot, decision.Actions);
-                var mapped = pipeline.ScreenActions;
-                var sent = pipeline.HidActions;
-                double dpiScale = pipeline.DpiScale;
-                Log($"AI mouse test: attempt {attempt} \u2014 model says: {decision.Reasoning}");
-                for (int i = 0; i < mapped.Count; i++)
-                {
-                    var raw = decision.Actions[i];
-                    var a = mapped[i];
-                    var s = sent[i];
-                    if (a.X is not null || a.Y is not null)
-                        Log($"  action[{i}] {a.Type} image=({raw.X},{raw.Y}) screen=({a.X},{a.Y}) hid=({s.X},{s.Y}) dpi={dpiScale:0.00}\u00d7");
-                    else if (!string.IsNullOrEmpty(a.Button))
-                        Log($"  action[{i}] {a.Type} button={a.Button}");
-                    else
-                        Log($"  action[{i}] {a.Type}");
-                }
-
-                // Split coarse moves from the click so we can refine in between.
-                int clickIdx = -1;
-                for (int i = 0; i < sent.Count; i++)
-                    if (sent[i].Type == "click") { clickIdx = i; break; }
-                var preClick = clickIdx >= 0 ? sent.Take(clickIdx).ToList() : sent.ToList();
-                var clickActions = clickIdx >= 0 ? sent.Skip(clickIdx).ToList() : new List<HidAction>();
-
-                // ---- UIA fast path ------------------------------------------------
-                // Ask the UI Automation tree to find the OK button on the
-                // Self-test dialog directly. On a confident hit we patch the
-                // pre-click absolute move with the UIA-reported pixel-exact
-                // centre and skip the AI-driven cursor refinement. This is the
-                // primary fix for poor 4K-dialog targeting accuracy.
-                const string uiaTarget =
-                    "the enabled \"OK\" button (NOT the greyed-out \"Cancel\" button) " +
-                    "of a small standard-looking Windows dialog titled \"Self-test\"";
-                var uiaHit = UiaTargetResolver.Resolve(
-                    uiaTarget, Log, cts.Token, cursorHint: Cursor.Position);
-                bool uiaUsed = false;
-                if (uiaHit is not null)
-                {
-                    Log($"  UIA: matched '{uiaHit.Name}' [{uiaHit.ControlType}] " +
-                        $"@ ({uiaHit.Centre.X},{uiaHit.Centre.Y}) " +
-                        $"rect=({uiaHit.ScreenRect.X},{uiaHit.ScreenRect.Y} {uiaHit.ScreenRect.Width}x{uiaHit.ScreenRect.Height}) " +
-                        $"score={uiaHit.Confidence:0.00} — overriding model coords, skipping refinement");
-
-                    // Replace the absolute move(s) in preClick with a single
-                    // pixel-exact move to the UIA centre. Drop any other
-                    // pre-click moves (the model occasionally emits two).
-                    var patched = new List<HidAction>();
-                    var screenMove = new HidAction(
-                        "move",
-                        X: uiaHit.Centre.X,
-                        Y: uiaHit.Centre.Y,
-                        Absolute: true,
-                        Target: uiaTarget);
-                    var hidMove = HidScaler.CompensateForDpi(new[] { screenMove }, dpiScale)[0];
-                    patched.Add(hidMove);
-                    // Preserve any non-move actions (waits, etc.) the model emitted.
-                    for (int k = 0; k < preClick.Count; k++)
-                        if (preClick[k].Type != "move") patched.Add(preClick[k]);
-                    preClick = patched;
-                    uiaUsed = true;
-                }
-                else
-                {
-                    Log("  UIA: no confident match for OK button — falling back to vision pipeline");
-                }
-
-                try
-                {
-                    using var sendCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-                    var resp = await hw.SendAsync(preClick, sendCts.Token);
-                    if (!resp.Ok)
-                    {
-                        Log($"AI mouse test: dongle reported failure after {resp.Executed} action(s): {resp.Error}");
-                        continue;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Log($"AI mouse test: send failed: {ex.Message}");
-                    continue;
-                }
-
-                // Where did the cursor *actually* land? This separates HID over/undershoot
-                // from model misclick. Sampled ~150 ms after the dongle ACKs.
-                await Task.Delay(150);
-                var landed = Cursor.Position;
-                int? wantX = null, wantY = null;
-                if (uiaUsed)
-                {
-                    wantX = uiaHit!.Centre.X;
-                    wantY = uiaHit.Centre.Y;
-                }
-                else
-                {
-                    for (int i = 0; i < mapped.Count; i++)
-                    {
-                        if (mapped[i].Type == "move" && mapped[i].X is int mx && mapped[i].Y is int my)
-                        { wantX = mx; wantY = my; }
-                    }
-                }
-                if (wantX is int wx && wantY is int wy)
-                {
-                    int dxC = landed.X - wx, dyC = landed.Y - wy;
-                    Log($"  cursor landed at ({landed.X},{landed.Y}); requested=({wx},{wy}); delta=({dxC:+#;-#;0},{dyC:+#;-#;0})");
-                }
-                else
-                {
-                    Log($"  cursor landed at ({landed.X},{landed.Y})");
-                }
-
-                // -------- Iterative targeting refinement --------
-                // Capture a native-resolution crop around the cursor, ask the
-                // model whether the crosshair is on the target, and nudge by
-                // the returned relative offset. Up to 3 rounds. Skipped when
-                // UIA already gave us a pixel-exact location.
-                if (!uiaUsed)
-                {
-                    await CursorTargeting.RefineAsync(
-                        ai, hw, dpiScale,
-                        targetDescription: uiaTarget,
-                        targetShortName: "OK button",
-                        aiTimeoutSeconds: _cfg.Loop.AiTimeoutSeconds,
-                        log: Log,
-                        outerCt: cts.Token);
-                }
-
-                // Now deliver the click.
-                if (clickActions.Count > 0)
-                {
-                    try
-                    {
-                        using var clickCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-                        var resp = await hw.SendAsync(clickActions, clickCts.Token);
-                        if (!resp.Ok)
-                            Log($"AI mouse test: click send reported failure: {resp.Error}");
-                    }
-                    catch (Exception ex)
-                    {
-                        Log($"AI mouse test: click send failed: {ex.Message}");
-                    }
-                }
-
-                // Give Windows time to deliver the click and our handler to fire.
-                for (int i = 0; i < 20 && !dismissed; i++) await Task.Delay(50);
-
-                if (dismissed)
-                {
-                    Log($"AI mouse test: PASSED on attempt {attempt}");
-                }
-                else
-                {
-                    Log($"AI mouse test: attempt {attempt} \u2014 popup not dismissed, retrying");
-                }
+                ConfigStore.Save(_cfg);
+                Log("Calibration: saved to settings.json");
+                SetTestResult(_calibrateMouseStatus, true);
             }
-
-            SetTestResult(_aiMouseStatus, dismissed);
-            if (!dismissed) Log($"AI mouse test: FAILED after {MaxAttempts} attempts");
+            else
+            {
+                Log("Calibration: FAILED");
+                SetTestResult(_calibrateMouseStatus, false);
+            }
         }
         catch (Exception ex)
         {
-            Log("AI mouse test: failed \u2014 " + ex.Message);
-            SetTestResult(_aiMouseStatus, false);
+            Log($"Calibration: failed — {ex.Message}");
+            SetTestResult(_calibrateMouseStatus, false);
         }
         finally
         {
-            popup?.Close();
-            popup?.Dispose();
-            (ai as IDisposable)?.Dispose();
             if (ownsClient) (hw as IDisposable)?.Dispose();
-            _testAiMouse.Enabled = _hwTestPassed && _aiTestPassed;
+            _calibrateMouse.Enabled = true;
         }
     }
 
@@ -1508,7 +1358,7 @@ Rules:
         _testHwClient = null;
 
         _cts = new CancellationTokenSource();
-        var loop = new BotLoop(ai, hw, _cfg.Loop, _playbook, Log);
+        var loop = new BotLoop(ai, hw, _cfg.Loop, _cfg.Mouse, _playbook, Log);
 
         bool keepOpen = _keepOpen.Checked;
         if (keepOpen)

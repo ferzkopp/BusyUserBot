@@ -22,7 +22,7 @@ import asyncio
 import json
 import struct
 import sys
-from typing import Any, Callable
+from typing import Any
 
 from bleak import BleakClient, BleakScanner
 
@@ -38,27 +38,27 @@ class Dongle:
         self._token = token
         self._rx_buf = bytearray()
         self._rx_expected = 0
-        self._response: asyncio.Future[str] | None = None
-        self._response_filter: Callable[[str], bool] | None = None
+        self._hello: asyncio.Future[str] | None = None
 
     async def __aenter__(self) -> "Dongle":
         await self._client.connect()
         await self._client.start_notify(STAT_UUID, self._on_notify)
-        # Auth gates command execution. The hello notification is useful when
-        # it arrives, but some Windows/Bleak stacks miss it after a fresh
-        # no-pairing connection, so do not make that notification mandatory.
+        # Auth gates command execution. The hello notification is the only
+        # message the dongle ever sends; commands afterwards are fire-and-
+        # forget. Some Windows/Bleak stacks miss the hello after a fresh
+        # no-pairing connection, so do not make it mandatory.
         loop = asyncio.get_running_loop()
-        self._response = loop.create_future()
-        self._response_filter = None
+        self._hello = loop.create_future()
         await self._client.write_gatt_char(AUTH_UUID, self._token.encode("utf-8"), response=True)
         try:
-            hello = await asyncio.wait_for(asyncio.shield(self._response), timeout=1.0)
-            self._response = None
+            hello = await asyncio.wait_for(asyncio.shield(self._hello), timeout=1.0)
         except asyncio.TimeoutError:
-            self._response = None
+            pass
         else:
             if not json.loads(hello).get("ok"):
                 raise RuntimeError(f"auth rejected: {hello}")
+        finally:
+            self._hello = None
         return self
 
     async def __aexit__(self, *_: Any) -> None:
@@ -86,58 +86,18 @@ class Dongle:
                 payload = bytes(self._rx_buf).decode("utf-8", errors="replace")
                 self._rx_buf.clear()
                 self._rx_expected = 0
-                if (self._response and not self._response.done()
-                    and (self._response_filter is None or self._response_filter(payload))):
-                    self._response.set_result(payload)
+                if self._hello and not self._hello.done():
+                    self._hello.set_result(payload)
 
-    async def send(self, actions: list[dict]) -> dict:
+    async def send(self, actions: list[dict]) -> None:
+        """Fire-and-forget: stream the framed command, expect no reply."""
         body = json.dumps({"actions": actions}).encode("utf-8")
         framed = struct.pack("<H", len(body)) + body
-        loop = asyncio.get_running_loop()
-        self._response = loop.create_future()
-        self._response_filter = _is_command_response
-        # Chunk to a safe ATT payload; the firmware reassembles.
+        # Chunk to a safe ATT payload; the firmware reassembles. Use
+        # write-without-response (UDP style) — the dongle never answers.
         chunk = 180
         for off in range(0, len(framed), chunk):
-            await self._client.write_gatt_char(CMD_UUID, framed[off:off + chunk], response=True)
-        try:
-            raw = await asyncio.wait_for(self._response, timeout=5.0)
-            return json.loads(raw)
-        except asyncio.TimeoutError:
-            try:
-                raw = await self._read_latest_status()
-            except Exception as exc:
-                raise RuntimeError(
-                    f"timeout waiting for dongle response; STATUS read fallback failed: "
-                    f"{type(exc).__name__} {exc}"
-                ) from exc
-            if raw and _is_command_response(raw):
-                return json.loads(raw)
-            raise RuntimeError("timeout waiting for dongle response")
-        finally:
-            self._response = None
-            self._response_filter = None
-
-    async def _read_latest_status(self) -> str | None:
-        data = await self._client.read_gatt_char(STAT_UUID)
-        return _decode_framed_payload(bytes(data))
-
-
-def _is_command_response(payload: str) -> bool:
-    try:
-        msg = json.loads(payload)
-    except json.JSONDecodeError:
-        return True
-    return "firmware" not in msg
-
-
-def _decode_framed_payload(data: bytes) -> str | None:
-    if len(data) < 2:
-        return None
-    expected = struct.unpack("<H", data[:2])[0]
-    if expected <= 0 or len(data) < expected + 2:
-        return None
-    return data[2:2 + expected].decode("utf-8", errors="replace")
+            await self._client.write_gatt_char(CMD_UUID, framed[off:off + chunk], response=False)
 
 
 async def find_device(name: str, address: str | None) -> str:
@@ -179,9 +139,9 @@ async def run(args: argparse.Namespace) -> int:
         raise SystemExit(f"unknown command {args.cmd}")
 
     async with Dongle(BleakClient(address), args.token) as d:
-        result = await d.send(actions)
-        print(json.dumps(result, indent=2))
-        return 0 if result.get("ok") else 1
+        await d.send(actions)
+        print(json.dumps({"ok": True, "sent": len(actions)}, indent=2))
+        return 0
 
 
 def main(argv: list[str] | None = None) -> int:

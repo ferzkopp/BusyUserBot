@@ -18,10 +18,12 @@
 //                                              little-endian total length;
 //                                              the JSON body follows in any
 //                                              number of writes until len is
-//                                              reached.
-//     6e601003-...  STATUS  (notify)           Length-prefixed JSON responses
-//                                              and async log lines, chunked
-//                                              to fit MTU.
+//                                              reached. Fire-and-forget: the
+//                                              dongle never answers a command.
+//     6e601003-...  STATUS  (notify)           Used ONLY for the one-shot AUTH
+//                                              handshake reply (the firmware
+//                                              "hello"). No per-command
+//                                              responses are sent.
 //
 // Build:
 //   * Arduino IDE 2.x (or arduino-cli).
@@ -72,7 +74,7 @@ static constexpr const char* AUTH_UUID = "6e601001-b5a3-f393-e0a9-e50e24dcca9e";
 static constexpr const char* CMD_UUID  = "6e601002-b5a3-f393-e0a9-e50e24dcca9e";
 static constexpr const char* STAT_UUID = "6e601003-b5a3-f393-e0a9-e50e24dcca9e";
 
-static constexpr const char* FIRMWARE_VERSION = "0.2.7-ble";
+static constexpr const char* FIRMWARE_VERSION = "0.3.0-ble";
 
 // ---------------------------------------------------------------------------
 // HID + display
@@ -314,7 +316,16 @@ static String executeAction(JsonObjectConst a) {
     } else if (t == "click") {
         uint8_t btn = resolveButton(a["button"].as<const char*>() ? a["button"].as<const char*>() : "left");
         int count = a["count"].is<int>() ? a["count"].as<int>() : 1;
-        for (int i = 0; i < count; i++) Mouse.click(btn);
+        for (int i = 0; i < count; i++) {
+            Mouse.click(btn);
+            // Insert a short gap between consecutive clicks so the host can
+            // register them as distinct button presses. Without this the
+            // back-to-back HID reports are sent faster than the USB poll
+            // interval and the OS coalesces them into a single click,
+            // breaking double-click (count=2) detection. 60 ms is well
+            // inside the default Windows double-click threshold (~500 ms).
+            if (i < count - 1) delay(60);
+        }
     } else if (t == "down") {
         Mouse.press(resolveButton(a["button"].as<const char*>() ? a["button"].as<const char*>() : "left"));
     } else if (t == "up") {
@@ -382,10 +393,12 @@ static void notifyStatus(const String& json) {
 // Command-stream handler
 // ---------------------------------------------------------------------------
 static void handleCommandBytes(const uint8_t* data, size_t len) {
+    // Commands are fire-and-forget: once the connection is authed we execute
+    // them and never answer. The STATUS characteristic is reserved for the
+    // one-shot AUTH hello. Errors are surfaced on the LCD bottom line only.
     if (!g_conn.authed) {
-        notifyStatus("{\"ok\":false,\"error\":\"unauthorized\"}");
+        // Drop any command that arrives before AUTH and close the link.
         if (g_server && g_server->getConnectedCount() > 0) {
-            // Close the connection on auth failure.
             auto peers = g_server->getPeerDevices();
             for (auto& id : peers) g_server->disconnect(id);
         }
@@ -401,7 +414,8 @@ static void handleCommandBytes(const uint8_t* data, size_t len) {
             g_conn.expected = (uint32_t)g_conn.rxBuf[0] | ((uint32_t)g_conn.rxBuf[1] << 8);
             g_conn.rxBuf.clear();
             if (g_conn.expected == 0 || g_conn.expected > 8192) {
-                notifyStatus("{\"ok\":false,\"error\":\"bad length\"}");
+                // Malformed frame: drop the rest of this write and resync.
+                showLast("ERR len");
                 g_conn.expected = 0;
                 return;
             }
@@ -419,8 +433,7 @@ static void handleCommandBytes(const uint8_t* data, size_t len) {
             g_conn.expected = 0;
 
             if (err) {
-                String e = String("{\"ok\":false,\"error\":\"bad json: ") + err.c_str() + "\"}";
-                notifyStatus(e);
+                showLast(String("ERR json"));
                 continue;
             }
             JsonArrayConst actions = doc["actions"].as<JsonArrayConst>();
@@ -435,13 +448,8 @@ static void handleCommandBytes(const uint8_t* data, size_t len) {
             }
             if (errMsg.length()) {
                 releaseAllInput();
-                String s = String("{\"ok\":false,\"executed\":") + executed +
-                           ",\"error\":\"" + errMsg + "\"}";
-                notifyStatus(s);
-                showLast("ERR");
+                showLast(String("ERR: ") + errMsg);
             } else {
-                String s = String("{\"ok\":true,\"executed\":") + executed + "}";
-                notifyStatus(s);
                 showLast(String("ok x") + executed);
             }
         }
@@ -589,8 +597,9 @@ void setup() {
         NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
     cmdChar->setCallbacks(new CmdCb());
 
+    // STATUS is notify-only now: its sole purpose is the one-shot AUTH hello.
     g_statChar = svc->createCharacteristic(STAT_UUID,
-        NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::READ);
+        NIMBLE_PROPERTY::NOTIFY);
 
     svc->start();
     stageOk("BLE svc");

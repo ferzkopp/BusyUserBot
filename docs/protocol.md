@@ -1,8 +1,10 @@
 # Wire protocol: Controller ↔ Dongle (Bluetooth LE)
 
 The dongle exposes a single custom GATT service over Bluetooth LE. The
-controller connects to the advertising device by name, then exchanges
-length-prefixed JSON over two characteristics after token authentication.
+controller connects to the advertising device by name and performs a one-shot
+token handshake. After that handshake the link is **one-way**: the controller
+streams length-prefixed JSON commands to the dongle fire-and-forget (UDP
+style) and the dongle never answers a command.
 
 This document is the source of truth for the wire format. The same JSON
 schema is what the AI Executor stage is instructed to emit in
@@ -20,24 +22,21 @@ deserialised from the model's output and re-serialised onto the wire.
             ║ AUTH (write):  "<DEVICE_TOKEN>"                   ║
             ║                                                   ║
             ║                  STATUS (notify):                 ║
-            ║                  {"ok":true,"firmware":"0.2.1-ble"}║
+            ║                  {"ok":true,"firmware":"0.3.0-ble"}║
             ║                  …or  {"ok":false,"error":"…"} + disconnect
             ╚═══════════════════════════════════════════════════╝
             ╔═══════════════════════════════════════════════════╗
-            ║ COMMAND (write): {"actions":[ … ]}                ║
-            ║                                                   ║
-            ║                   STATUS (notify):                ║
-            ║                   {"ok":true,"executed":N}        ║
-            ║                       …or {"ok":false,"executed":n,"error":"…"}
+            ║ COMMAND (write-without-response):                 ║
+            ║   {"actions":[ … ]}     (fire-and-forget, no reply)║
             ╚═══════════════════════════════════════════════════╝
                               ⋮  (repeat per command)
             disconnect (controller drop)  ───►  release all keys/buttons,
                                                 resume advertising
 ```
 
-State resets on every disconnect: the dongle requires a fresh `AUTH` write
-before it will accept any further `COMMAND`s, and it releases any held
-keys / mouse buttons.
+The AUTH handshake is the **only** back-channel from the dongle. State resets
+on every disconnect: the dongle requires a fresh `AUTH` write before it will
+accept any further `COMMAND`s, and it releases any held keys / mouse buttons.
 
 ## Service and characteristics
 
@@ -46,11 +45,12 @@ keys / mouse buttons.
 | Service  | `6e601000-b5a3-f393-e0a9-e50e24dcca9e` | —                           | —                  |
 | `AUTH`   | `6e601001-b5a3-f393-e0a9-e50e24dcca9e` | Write                       | controller → dongle |
 | `COMMAND`| `6e601002-b5a3-f393-e0a9-e50e24dcca9e` | Write / Write-No-Resp       | controller → dongle |
-| `STATUS` | `6e601003-b5a3-f393-e0a9-e50e24dcca9e` | Notify / Read               | dongle → controller |
+| `STATUS` | `6e601003-b5a3-f393-e0a9-e50e24dcca9e` | Notify                      | dongle → controller |
 
 The GATT attributes are intentionally plain and guarded by the
 `DEVICE_TOKEN`; this avoids Windows ARM Bluetooth stacks getting stuck in
-the OS pairing flow before the firmware receives `AUTH`.
+the OS pairing flow before the firmware receives `AUTH`. `STATUS` carries a
+single message per connection — the AUTH hello — and nothing else.
 
 ## Authentication
 
@@ -59,7 +59,7 @@ token (matching `DEVICE_TOKEN` in `firmware/BusyUserBot/secrets.h`) to
 `AUTH`. The dongle replies on `STATUS` with either:
 
 ```json
-{ "ok": true, "firmware": "0.2.7-ble" }
+{ "ok": true, "firmware": "0.3.0-ble" }
 ```
 
 …or, on a wrong token, `{"ok":false,"error":"bad token"}` followed by an
@@ -68,7 +68,7 @@ current connection is authenticated.
 
 ## Framing
 
-`COMMAND` and `STATUS` payloads are length-prefixed JSON:
+`COMMAND` payloads (and the single `STATUS` hello) are length-prefixed JSON:
 
 ```
 +--------+--------+-------------- ... --------------+
@@ -82,6 +82,10 @@ writes/notifications; both ends buffer until `len` bytes have been
 received. Receivers must reset their reassembly state on disconnect.
 
 ## Commands (controller → dongle, on `COMMAND`)
+
+Commands are written with **Write-Without-Response** (fire-and-forget). The
+dongle executes them and never replies; the controller does not wait for an
+acknowledgement beyond the BLE link layer.
 
 ```json
 {
@@ -100,7 +104,7 @@ Supported action types:
 | Type      | Fields                                                                | Notes |
 | --------- | --------------------------------------------------------------------- | ----- |
 | `move`    | `x`, `y` (int), `absolute` (bool, default `true`), `target` (string, optional, controller-only) | Coordinate system: (0,0) = top-left, (screen-max-x, screen-max-y) = bottom-right. Absolute is approximated by slamming to (0,0) first then walking to (x,y). The HID mouse report is relative and clamped to `int8_t` per packet, so the firmware chunks the move into ~120-pixel hops with ~8 ms pacing. Windows' "Enhance pointer precision" damps relative deltas non-linearly; for best accuracy, **disable** *Settings → Bluetooth & devices → Mouse → Additional mouse settings → Pointer Options → Enhance pointer precision* on the target PC. For true absolute positioning, swap the firmware mouse to a custom HID descriptor. The optional `target` string is consumed by the controller's iterative cursor-targeting refinement stage (a short natural-language description of the UI element being aimed at, e.g. *"the Start button on the taskbar"*); it is ignored by the dongle. |
-| `click`   | `button` ∈ {`left`, `right`, `middle`}, `count` (int, default `1`)    |       |
+| `click`   | `button` ∈ {`left`, `right`, `middle`}, `count` (int, default `1`)    | `count: 2` performs a double-click. The firmware inserts a ~60 ms gap between consecutive clicks so the host registers them as distinct presses (within the OS double-click threshold). |
 | `down`    | `button`                                                              | Press and hold a mouse button. |
 | `up`      | `button`                                                              | Release. |
 | `scroll`  | `dy` (int, +up / −down, clamped to ±127 per report)                  |       |
@@ -114,23 +118,15 @@ see [control-flow.md](control-flow.md) — and the controller's hard
 constraint validator runs over the parsed actions before they reach the
 dongle.
 
-## Responses (dongle → controller, on `STATUS`)
+## Responses
 
-After every command payload, the dongle pushes exactly one response:
-
-```json
-{ "ok": true, "executed": 5 }
-```
-
-…or, on the first failing action:
-
-```json
-{ "ok": false, "executed": 2, "error": "unknown key: CMD" }
-```
-
-The dongle stops at the first failing action, releases all held
-keys / buttons, and reports how many of the requested actions were
-performed.
+There are **no** per-command responses. After the AUTH hello the dongle never
+writes back to `STATUS`; commands are fire-and-forget. The dongle still
+validates each payload locally and, on the first failing action, releases all
+held keys / buttons and shows an `ERR: …` line on its on-board display, but it
+does not report the failure over BLE. The controller's hard constraint
+validator (see [control-flow.md](control-flow.md)) is the primary safety net
+before actions ever reach the dongle.
 
 ## Reset
 

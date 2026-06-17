@@ -40,13 +40,20 @@ internal static class HidScaler
 
     /// <summary>
     /// Returns a copy of <paramref name="actions"/> with x/y of move actions
-    /// (and dx/dy of relative-only moves) divided by the host display scale,
-    /// so that the dongle's relative-HID emulation lands on the requested
-    /// physical pixel. No-op when scale ≈ 1.
+    /// (and dx/dy of relative-only moves) divided by the host display scale
+    /// and then multiplied by a calibration gain factor. This places corrected
+    /// deltas to the firmware so the dongle's relative-HID emulation lands on
+    /// the requested physical pixel despite Windows pointer settings and
+    /// dongle characteristics.
+    ///
+    /// <paramref name="calibrationGain"/> is measured during calibration mode.
+    /// Default 1.0 = no calibration adjustment (pure DPI compensation only).
+    /// Values &gt; 1.0 amplify moves (HID under-shoots); &lt; 1.0 dampen them
+    /// (HID over-shoots).
     /// </summary>
-    public static IReadOnlyList<HidAction> CompensateForDpi(IReadOnlyList<HidAction> actions, double scale)
+    public static IReadOnlyList<HidAction> CompensateForDpi(IReadOnlyList<HidAction> actions, double scale, double calibrationGain = 1.0)
     {
-        if (Math.Abs(scale - 1.0) < 0.01) return actions;
+        if (Math.Abs(scale - 1.0) < 0.01 && Math.Abs(calibrationGain - 1.0) < 0.01) return actions;
         var inv = 1.0 / scale;
         var result = new HidAction[actions.Count];
         for (int i = 0; i < actions.Count; i++)
@@ -56,8 +63,8 @@ internal static class HidScaler
             {
                 result[i] = a with
                 {
-                    X = a.X is int ax ? (int)Math.Round(ax * inv, MidpointRounding.AwayFromZero) : null,
-                    Y = a.Y is int ay ? (int)Math.Round(ay * inv, MidpointRounding.AwayFromZero) : null,
+                    X = a.X is int ax ? (int)Math.Round(ax * inv * calibrationGain, MidpointRounding.AwayFromZero) : null,
+                    Y = a.Y is int ay ? (int)Math.Round(ay * inv * calibrationGain, MidpointRounding.AwayFromZero) : null,
                 };
             }
             else

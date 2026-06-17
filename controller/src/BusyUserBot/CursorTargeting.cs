@@ -30,7 +30,8 @@ internal static class CursorTargeting
         string targetShortName,
         int aiTimeoutSeconds,
         Action<string> log,
-        CancellationToken outerCt)
+        CancellationToken outerCt,
+        double calibrationGain = 1.0)
     {
         string sysPrompt = $$"""
 You are calibrating a mouse cursor for a "busy user" automation bot.
@@ -41,33 +42,39 @@ pixel (it is the cursor's true position, not the visible Windows arrow
 which may render with a small offset). The crosshair is USUALLY near
 the centre of the image, but when the cursor is close to a screen edge
 the crop is clamped to stay on-screen, so the crosshair can be anywhere
-inside the image — always trust where you see the crosshair, not where
-you expect it to be.
+inside the image — always trust where you see the crosshair.
 
-Your job: determine whether the crosshair is centred on the TARGET.
+IMPORTANT: the controller already knows the cursor's exact pixel and can
+move it ACCURATELY to any pixel you name. You do NOT need to compute
+movement offsets, deltas, or do any arithmetic relative to the crosshair —
+attempting that only introduces errors. Your ONLY job is to locate the
+TARGET and report its pixel coordinates in this image. The controller will
+move the cursor precisely onto the coordinates you report.
+
 TARGET: {{targetDescription}}
 
 Output strict JSON only — no prose, no Markdown fences:
 {
-  "reasoning": "short note on where the crosshair is vs. the target",
+  "reasoning": "short note on where the target is in the image",
   "actions": [
-    {"type":"move","x":<dx>,"y":<dy>,"absolute":false}
+    {"type":"move","x":<targetX>,"y":<targetY>,"absolute":true}
   ],
-  "done": <true if crosshair is on the target, else false>
+  "done": <true if the crosshair is already on the target, else false>
 }
 
 Rules:
-- dx,dy are pixel offsets in this image. Positive dx moves the cursor
-  right; positive dy moves it down. The image is at the screen's native
-  resolution, so 1 image pixel == 1 screen pixel.
-- If the crosshair is already on the target, set done=true and emit
-  an empty actions array.
-- If the target is visible, compute the offset from the crosshair to
-  the target's visual centre (or the centre of its clickable hit area).
-- If the target is NOT visible in this crop, pick the direction you
-  would expect it to be and emit a single capped move with
-  |dx|,|dy| <= 480.
-- Only "move" actions with "absolute":false are allowed.
+- x,y are the TARGET's pixel coordinates in THIS image: its visual centre,
+  or the centre of its clickable hit area. Origin (0,0) is the image's
+  top-left; x grows right, y grows down. 1 image pixel == 1 screen pixel.
+- Do NOT output offsets or deltas from the crosshair. Always report the
+  target's ABSOLUTE position in the image; the controller computes the
+  move itself.
+- If the crosshair is already centred on the target, set done=true and
+  emit an empty actions array.
+- If the target is NOT visible in this crop, set done=false and report the
+  pixel on the image edge in the direction you expect the target to be, so
+  the controller can pan toward it.
+- Only "move" actions with "absolute":true are allowed.
 """;
 
         for (int r = 0; r < Rounds; r++)
@@ -77,9 +84,10 @@ Rules:
             var crop = ScreenCapture.GrabRegionAroundCursor(cur, RegionSize, RegionSize, out var crossInImg);
             var userPrompt =
                 $"MODE: TARGETING\n\n" +
-                $"GOAL: centre the crosshair on {targetShortName}.\n" +
+                $"GOAL: report the pixel coordinates of {targetShortName} in this image.\n" +
                 $"TARGET (full): {targetDescription}\n\n" +
-                $"IMAGE: {crop.SentWidth}x{crop.SentHeight} native pixels; crosshair is at ({crossInImg.X},{crossInImg.Y}).\n" +
+                $"IMAGE: {crop.SentWidth}x{crop.SentHeight} native pixels; the crosshair (current cursor) is at ({crossInImg.X},{crossInImg.Y}).\n" +
+                $"The controller will move the cursor precisely onto the coordinates you report, so just give the target's pixel position.\n" +
                 $"Reply with TARGETING JSON only.";
 
             AiDecision decision;
@@ -106,7 +114,23 @@ Rules:
             {
                 if (a.Type == "move" && (a.X is not null || a.Y is not null))
                 {
-                    dx = a.X ?? 0; dy = a.Y ?? 0; gotMove = true; break;
+                    // The model reports the TARGET's absolute pixel in the image.
+                    // The controller knows the crosshair pixel exactly, so it
+                    // computes the nudge here rather than trusting the model's
+                    // arithmetic. Tolerate a model that still emits a relative
+                    // offset (absolute:false) by using the values as-is.
+                    if (a.Absolute == false)
+                    {
+                        dx = a.X ?? 0;
+                        dy = a.Y ?? 0;
+                    }
+                    else
+                    {
+                        dx = (a.X ?? crossInImg.X) - crossInImg.X;
+                        dy = (a.Y ?? crossInImg.Y) - crossInImg.Y;
+                    }
+                    gotMove = true;
+                    break;
                 }
             }
 
@@ -122,7 +146,7 @@ Rules:
             log($"  refine[{r + 1}]: cursor at ({cur.X},{cur.Y}); nudge=({dx:+#;-#;0},{dy:+#;-#;0}) — {decision.Reasoning}");
 
             var nudge = new HidAction[] { new("move", X: dx, Y: dy, Absolute: false) };
-            var nudgeHid = HidScaler.CompensateForDpi(nudge, dpiScale);
+            var nudgeHid = HidScaler.CompensateForDpi(nudge, dpiScale, calibrationGain);
             try
             {
                 using var ncts = CancellationTokenSource.CreateLinkedTokenSource(outerCt);

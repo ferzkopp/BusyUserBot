@@ -7,6 +7,7 @@ public sealed class AppConfig
     public DongleConfig Dongle { get; set; } = new();
     public AiConfig Ai { get; set; } = new();
     public LoopConfig Loop { get; set; } = new();
+    public MouseConfig Mouse { get; set; } = new();
 }
 
 public sealed class DongleConfig
@@ -81,4 +82,37 @@ public sealed class LoopConfig
     /// per-step validation), in seconds.
     /// </summary>
     public int AiTimeoutSeconds { get; set; } = 180;
+}
+
+/// <summary>
+/// Mouse movement calibration parameters. Determined by the calibration mode
+/// to account for Windows pointer settings and dongle characteristics.
+/// Stored persistently so the same HID firmware and host config lands
+/// consistently across runs.
+///
+/// The calibration process measures how much pixel movement is achieved per
+/// HID unit sent, then applies a correction factor to all future absolute
+/// moves to improve accuracy.
+/// </summary>
+public sealed class MouseConfig
+{
+    /// <summary>
+    /// Gain multiplier applied to the DPI compensation. A value &gt; 1.0 means
+    /// HID moves are under-shooting; we amplify outgoing deltas to compensate.
+    /// A value &lt; 1.0 means over-shooting; we dampen deltas.
+    /// Default 1.0 = no correction (pure DPI compensation only).
+    /// </summary>
+    public double CalibrationGain { get; set; } = 1.0;
+
+    /// <summary>
+    /// Screen width in pixels assumed by the calibration. If the real screen
+    /// changes drastically (e.g., projector swap), recalibrate. Zero means
+    /// not yet calibrated.
+    /// </summary>
+    public int CalibratedScreenWidth { get; set; } = 0;
+
+    /// <summary>
+    /// Screen height in pixels assumed by the calibration.
+    /// </summary>
+    public int CalibratedScreenHeight { get; set; } = 0;
 }

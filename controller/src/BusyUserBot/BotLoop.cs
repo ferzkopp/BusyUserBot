@@ -15,6 +15,7 @@ public sealed class BotLoop
     private readonly IAiEngine _ai;
     private readonly IHardwareClient _hw;
     private readonly LoopConfig _cfg;
+    private readonly MouseConfig _mouseCfg;
     private readonly Playbook _playbook;
     private readonly Action<string> _log;
     private readonly TimeSpan _aiTimeout;
@@ -24,12 +25,14 @@ public sealed class BotLoop
         IAiEngine ai,
         IHardwareClient hw,
         LoopConfig cfg,
+        MouseConfig mouseCfg,
         Playbook playbook,
         Action<string> log)
     {
         _ai = ai;
         _hw = hw;
         _cfg = cfg;
+        _mouseCfg = mouseCfg;
         _playbook = playbook;
         _log = log;
         _aiTimeout = TimeSpan.FromSeconds(Math.Max(10, _cfg.AiTimeoutSeconds));
@@ -250,9 +253,11 @@ public sealed class BotLoop
             _log($"    attempt {attempt}/{attempts}");
 
             var shot = ScreenCapture.Grab();
+            var cursor = Cursor.Position;
+            var (cursorImgX, cursorImgY) = shot.MapPointToImage(cursor.X, cursor.Y);
             var actionUser = Prompts.BuildExecutorActionUser(
                 goal, prev, step, next, stepIndex, stepCount,
-                shot.SentWidth, shot.SentHeight, lastFailure);
+                shot.SentWidth, shot.SentHeight, cursorImgX, cursorImgY, lastFailure);
 
             AiDecision decision;
             try
@@ -285,7 +290,7 @@ public sealed class BotLoop
                 continue;
             }
 
-            var pipeline = HidCoordinatePipeline.Transform(shot, decision.Actions);
+            var pipeline = HidCoordinatePipeline.Transform(shot, decision.Actions, _mouseCfg.CalibrationGain);
             var mappedActions = pipeline.ScreenActions;
             var hidActions = pipeline.HidActions;
 
@@ -300,7 +305,7 @@ public sealed class BotLoop
             try
             {
                 int totalExecuted = await SendWithRefinementAsync(
-                    mappedActions, hidActions, pipeline.DpiScale, ct).ConfigureAwait(false);
+                    mappedActions, hidActions, pipeline.DpiScale, step.Description, ct).ConfigureAwait(false);
                 _log($"    executed {totalExecuted} action(s)");
             }
             catch (DongleFailureException dex)
@@ -379,34 +384,35 @@ public sealed class BotLoop
 
     /// <summary>
     /// Send the action batch to the dongle, but interleave the iterative
-    /// cursor-targeting refinement after every absolute <c>move</c> that
-    /// carries a non-empty <c>target</c> description (set by the executor).
+    /// cursor-targeting refinement after every absolute <c>move</c>. The move's
+    /// own <c>target</c> description (set by the executor) is preferred; when
+    /// the model omitted one, <paramref name="fallbackTarget"/> (the current
+    /// step description) is used so calibration still runs after every move.
     /// Returns total actions executed across all sub-batches.
     /// </summary>
     private async Task<int> SendWithRefinementAsync(
         IReadOnlyList<HidAction> screenActions,
         IReadOnlyList<HidAction> hidActions,
         double dpiScale,
+        string fallbackTarget,
         CancellationToken ct)
     {
-        // Walk through actions; for each absolute move with a target, send
-        // everything up to and including that move, run refinement, then
-        // continue with the rest.
+        // Walk through actions; for each absolute move, send everything up to
+        // and including that move, run refinement, then continue with the rest.
         int total = 0;
         int i = 0;
         while (i < hidActions.Count)
         {
-            // Find the next refinement boundary: an absolute move with a
-            // non-empty target. Refinement happens AFTER the move, so the
-            // boundary is inclusive (we send through index `boundary`).
+            // Find the next refinement boundary: any absolute move with
+            // coordinates. Refinement happens AFTER the move, so the boundary
+            // is inclusive (we send through index `boundary`).
             int boundary = -1;
             for (int j = i; j < screenActions.Count; j++)
             {
                 var sa = screenActions[j];
                 if (sa.Type == "move"
                     && sa.Absolute != false
-                    && (sa.X is not null || sa.Y is not null)
-                    && !string.IsNullOrWhiteSpace(sa.Target))
+                    && (sa.X is not null || sa.Y is not null))
                 {
                     boundary = j;
                     break;
@@ -422,7 +428,7 @@ public sealed class BotLoop
             // exact centre and skip the AI-driven refinement entirely; a miss
             // logs a single line and we proceed exactly as before.
             UiaTargetResolver.UiaHit? uiaHit = null;
-            if (boundary >= 0)
+            if (boundary >= 0 && !string.IsNullOrWhiteSpace(screenActions[boundary].Target))
             {
                 var moveScreen = screenActions[boundary];
                 uiaHit = UiaTargetResolver.Resolve(
@@ -442,7 +448,7 @@ public sealed class BotLoop
                     // then re-DPI-compensate just that one action to keep the
                     // HID slice in sync.
                     var fixedScreen = moveScreen with { X = uiaHit.Centre.X, Y = uiaHit.Centre.Y };
-                    var fixedHid = HidScaler.CompensateForDpi(new[] { fixedScreen }, dpiScale)[0];
+                    var fixedHid = HidScaler.CompensateForDpi(new[] { fixedScreen }, dpiScale, _mouseCfg.CalibrationGain)[0];
 
                     // Materialise the slice with the patched HID move at the boundary.
                     var patched = new List<HidAction>(sendEnd - i);
@@ -473,15 +479,19 @@ public sealed class BotLoop
 
             if (boundary < 0) break;
 
-            // Run refinement against the move's stated target, then continue.
-            var target = screenActions[boundary].Target!;
+            // Run refinement against the move's stated target (or the step
+            // description when the model omitted one), then continue.
+            var target = string.IsNullOrWhiteSpace(screenActions[boundary].Target)
+                ? fallbackTarget
+                : screenActions[boundary].Target!;
             await CursorTargeting.RefineAsync(
                 _ai, _hw, dpiScale,
                 targetDescription: target,
                 targetShortName: target,
                 aiTimeoutSeconds: _cfg.AiTimeoutSeconds,
                 log: _log,
-                outerCt: ct).ConfigureAwait(false);
+                outerCt: ct,
+                calibrationGain: _mouseCfg.CalibrationGain).ConfigureAwait(false);
 
             i = sendEnd;
         }
