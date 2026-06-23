@@ -893,7 +893,7 @@ public sealed class MainForm : Form
                 hw,
                 dialogCenter.X,
                 dialogCenter.Y,
-                calibrationGain: _cfg.Mouse.CalibrationGain,
+                cfg: _cfg.Mouse,
                 log: (msg) => Log($"  {msg}"),
                 ct: CancellationToken.None);
 

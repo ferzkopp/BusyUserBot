@@ -115,4 +115,34 @@ public sealed class MouseConfig
     /// Screen height in pixels assumed by the calibration.
     /// </summary>
     public int CalibratedScreenHeight { get; set; } = 0;
+
+    /// <summary>
+    /// Sampled HID report magnitudes (counts) measured during calibration.
+    /// Parallel to <see cref="AccelSamplePixelsX"/> and
+    /// <see cref="AccelSamplePixelsY"/>. Together they form the reverse-engineered
+    /// per-report transfer function f(N) = pixels moved by a single N-count HID
+    /// report. This captures the full (non-linear) Windows pointer-acceleration
+    /// curve plus DPI scaling, end-to-end, as measured via GetCursorPos.
+    /// Empty/short means "not profiled" — callers fall back to scalar
+    /// <see cref="CalibrationGain"/>.
+    /// </summary>
+    public int[] AccelSampleCounts { get; set; } = Array.Empty<int>();
+
+    /// <summary>Measured pixels-per-report on the X axis for each entry in
+    /// <see cref="AccelSampleCounts"/> (monotonic non-decreasing).</summary>
+    public double[] AccelSamplePixelsX { get; set; } = Array.Empty<double>();
+
+    /// <summary>Measured pixels-per-report on the Y axis for each entry in
+    /// <see cref="AccelSampleCounts"/> (monotonic non-decreasing).</summary>
+    public double[] AccelSamplePixelsY { get; set; } = Array.Empty<double>();
+
+    /// <summary>
+    /// True when a usable per-report acceleration profile has been measured and
+    /// the parallel arrays are consistent.
+    /// </summary>
+    [JsonIgnore]
+    public bool AccelProfileValid =>
+        AccelSampleCounts is { Length: > 1 } &&
+        AccelSamplePixelsX.Length == AccelSampleCounts.Length &&
+        AccelSamplePixelsY.Length == AccelSampleCounts.Length;
 }
