@@ -150,6 +150,13 @@ don't assume the highest-numbered port is the dongle.
 #### 3. Compile and upload
 
 ```powershell
+# If a Windows Application Control policy (WDAC / Smart App Control) blocks
+# the ESP32 build tools from loading their bundled Python DLL out of %TEMP%
+# ("An Application Control policy has blocked this file"), redirect Temp to a
+# repo-local folder first. Harmless to set unconditionally.
+$env:TEMP = "$PWD\.arduino-tmp"; $env:TMP = $env:TEMP
+New-Item -ItemType Directory -Force -Path $env:TEMP | Out-Null
+
 $fqbn = "esp32:esp32:lilygo_t_dongle_s3"
 arduino-cli compile --fqbn $fqbn firmware/BusyUserBot
 arduino-cli upload  --fqbn $fqbn --port COM7 firmware/BusyUserBot
@@ -213,6 +220,7 @@ source of truth.
 
 | Symptom | Fix |
 | ------- | --- |
+| `Failed to load Python DLL … An Application Control policy has blocked this file` (compile exits `0xffffffff`) | WDAC / Smart App Control is blocking DLLs in `%TEMP%`. Redirect Temp to a repo-local folder before compiling: `$env:TEMP = "$PWD\.arduino-tmp"; $env:TMP = $env:TEMP` (the `flash-dongle.ps1` script already does this). |
 | `USBHIDKeyboard.h: No such file` | Wrong board package version. Use ESP32 core 3.x or newer (the bootstrap script installs this). |
 | Compile error on `NimBLEServerCallbacks::onConnect` signature | NimBLE-Arduino version mismatch — install 2.x. |
 | `arduino-cli` doesn't list a COM port | Hold **BOOT** while plugging in to force download mode. |

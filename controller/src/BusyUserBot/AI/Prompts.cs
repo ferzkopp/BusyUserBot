@@ -204,8 +204,12 @@ Key names accepted by protocol:
 - HOME, END, PAGEUP, PAGEDOWN, UP, DOWN, LEFT, RIGHT
 - CTRL, SHIFT, ALT, GUI
 - Aliases accepted: WIN/WINDOWS/CMD map to GUI
+- Media keys (emit ALONE, never chorded with other keys):
+  VOLUME_UP, VOLUME_DOWN, MUTE, PLAY_PAUSE, STOP, NEXT_TRACK, PREV_TRACK
 
 Examples: ["CTRL","S"] = Ctrl+S. ["GUI","D"] = Win+D (toggle desktop, emit at most once per turn).
+For volume/media control prefer the media keys, one per action:
+["VOLUME_UP"], ["VOLUME_DOWN"], ["MUTE"] — do NOT combine them with modifiers.
 
 Useful Windows 11 chords to prefer over mouse hunting (use ["GUI", ...] for
 Win-key combinations):

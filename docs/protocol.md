@@ -149,6 +149,19 @@ UP  DOWN  LEFT  RIGHT
 CTRL  SHIFT  ALT  GUI         (GUI = Windows key; aliases: WIN, WINDOWS, CMD)
 ```
 
+Media / consumer-control keys are also accepted, but they live on a separate
+HID usage page and **must be sent alone** (a single-element `keys` array — they
+cannot be chorded with modifiers or other keys):
+
+```
+VOLUME_UP  VOLUME_DOWN  MUTE
+PLAY_PAUSE  STOP  NEXT_TRACK  PREV_TRACK
+```
+
+Example: `{ "type": "key", "keys": ["VOLUME_UP"] }` raises the system volume one
+step. The controller rejects any unrecognised key token before it reaches the
+dongle, so an unsupported name fails fast instead of stalling the run.
+
 ## Discovery model
 
 The controller never initiates pairing from code. Workflow is:

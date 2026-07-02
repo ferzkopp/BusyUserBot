@@ -32,6 +32,53 @@ internal static class CommandParser
         "left", "right", "middle",
     };
 
+    /// <summary>
+    /// Named key tokens the dongle firmware understands (see docs/protocol.md
+    /// and firmware resolveKey/resolveConsumerKey). Single letters (A-Z),
+    /// digits (0-9) and function keys (F1-F12) are accepted dynamically in
+    /// <see cref="IsSupportedKey"/>. Sending a token outside this set makes the
+    /// firmware reject the whole batch with "unknown key: …" — and because
+    /// commands are fire-and-forget the controller would otherwise never learn
+    /// of it and simply time out. Validating here turns that into a fast,
+    /// retryable failure.
+    /// </summary>
+    private static readonly HashSet<string> AllowedNamedKeys = new(StringComparer.OrdinalIgnoreCase)
+    {
+        // Editing / navigation
+        "ENTER", "RETURN", "ESC", "ESCAPE", "TAB", "SPACE",
+        "BACKSPACE", "DELETE", "INSERT",
+        "HOME", "END", "PAGEUP", "PAGEDOWN",
+        "UP", "DOWN", "LEFT", "RIGHT",
+        // Modifiers (and aliases)
+        "CTRL", "CONTROL", "SHIFT", "ALT", "OPTION",
+        "GUI", "WIN", "WINDOWS", "CMD",
+        // Media / consumer-control keys
+        "VOLUME_UP", "VOLUMEUP", "VOL_UP",
+        "VOLUME_DOWN", "VOLUMEDOWN", "VOL_DOWN",
+        "MUTE", "VOLUME_MUTE",
+        "PLAY_PAUSE", "PLAYPAUSE", "MEDIA_PLAY_PAUSE",
+        "STOP", "MEDIA_STOP",
+        "NEXT_TRACK", "NEXTTRACK", "MEDIA_NEXT",
+        "PREV_TRACK", "PREVTRACK", "PREVIOUS_TRACK", "MEDIA_PREV",
+    };
+
+    private static bool IsSupportedKey(string? token)
+    {
+        var k = (token ?? "").Trim();
+        if (k.Length == 0) return false;
+        if (k.Length == 1)
+        {
+            char c = char.ToUpperInvariant(k[0]);
+            if (c is >= 'A' and <= 'Z') return true;
+            if (c is >= '0' and <= '9') return true;
+        }
+        if ((k.Length == 2 || k.Length == 3) &&
+            (k[0] is 'F' or 'f') &&
+            int.TryParse(k.AsSpan(1), out var fn) && fn is >= 1 and <= 12)
+            return true;
+        return AllowedNamedKeys.Contains(k);
+    }
+
     public static AiDecision Parse(string raw)
     {
         var json = ExtractJson(raw);
@@ -124,6 +171,11 @@ internal static class CommandParser
                 case "key":
                     if (a.Keys is null || a.Keys.Length == 0)
                         throw new FormatException("key requires non-empty keys[]");
+                    foreach (var k in a.Keys)
+                    {
+                        if (!IsSupportedKey(k))
+                            throw new FormatException($"unsupported key: {k}");
+                    }
                     break;
                 case "wait":
                     if (a.Ms is null or < 0 or > 10000)

@@ -43,6 +43,7 @@
 #include <USB.h>
 #include <USBHIDKeyboard.h>
 #include <USBHIDMouse.h>
+#include <USBHIDConsumerControl.h>
 #include <SPI.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_ST7735.h>
@@ -81,6 +82,10 @@ static constexpr const char* FIRMWARE_VERSION = "0.3.0-ble";
 // ---------------------------------------------------------------------------
 USBHIDKeyboard Keyboard;
 USBHIDMouse    Mouse;
+// Media/consumer keys (volume, mute, play/pause, track skip) live on a
+// separate HID usage page and cannot be chorded with regular keyboard keys,
+// so they get their own HID interface.
+USBHIDConsumerControl ConsumerControl;
 
 // ST7735 panel + backlight pins.
 static constexpr int TFT_MOSI_PIN      = 3;
@@ -199,6 +204,39 @@ static int resolveKey(const String& nameIn, uint8_t& outCode) {
     return 0;
 }
 
+// Media / consumer-control keys. These live on a separate HID usage page from
+// the standard keyboard, are always emitted standalone (never chorded with
+// keyboard modifiers), and are sent via USBHIDConsumerControl. Returns 1 and
+// sets outUsage on a match, 0 otherwise.
+static int resolveConsumerKey(const String& nameIn, uint16_t& outUsage) {
+    String n = nameIn; n.toUpperCase();
+    struct C { const char* k; uint16_t v; };
+    static const C map[] = {
+        {"VOLUME_UP", CONSUMER_CONTROL_VOLUME_INCREMENT},
+        {"VOLUMEUP", CONSUMER_CONTROL_VOLUME_INCREMENT},
+        {"VOL_UP", CONSUMER_CONTROL_VOLUME_INCREMENT},
+        {"VOLUME_DOWN", CONSUMER_CONTROL_VOLUME_DECREMENT},
+        {"VOLUMEDOWN", CONSUMER_CONTROL_VOLUME_DECREMENT},
+        {"VOL_DOWN", CONSUMER_CONTROL_VOLUME_DECREMENT},
+        {"MUTE", CONSUMER_CONTROL_MUTE},
+        {"VOLUME_MUTE", CONSUMER_CONTROL_MUTE},
+        {"PLAY_PAUSE", CONSUMER_CONTROL_PLAY_PAUSE},
+        {"PLAYPAUSE", CONSUMER_CONTROL_PLAY_PAUSE},
+        {"MEDIA_PLAY_PAUSE", CONSUMER_CONTROL_PLAY_PAUSE},
+        {"STOP", CONSUMER_CONTROL_STOP},
+        {"MEDIA_STOP", CONSUMER_CONTROL_STOP},
+        {"NEXT_TRACK", CONSUMER_CONTROL_SCAN_NEXT},
+        {"NEXTTRACK", CONSUMER_CONTROL_SCAN_NEXT},
+        {"MEDIA_NEXT", CONSUMER_CONTROL_SCAN_NEXT},
+        {"PREV_TRACK", CONSUMER_CONTROL_SCAN_PREVIOUS},
+        {"PREVTRACK", CONSUMER_CONTROL_SCAN_PREVIOUS},
+        {"PREVIOUS_TRACK", CONSUMER_CONTROL_SCAN_PREVIOUS},
+        {"MEDIA_PREV", CONSUMER_CONTROL_SCAN_PREVIOUS},
+    };
+    for (const auto& e : map) if (n == e.k) { outUsage = e.v; return 1; }
+    return 0;
+}
+
 static uint8_t resolveButton(const String& bIn) {
     String b = bIn; b.toLowerCase();
     if (b == "right")  return MOUSE_RIGHT;
@@ -244,6 +282,7 @@ static String actionLabel(JsonObjectConst a, int index1) {
 // ---------------------------------------------------------------------------
 static void releaseAllInput() {
     Keyboard.releaseAll();
+    ConsumerControl.release();
     Mouse.release(MOUSE_LEFT);
     Mouse.release(MOUSE_RIGHT);
     Mouse.release(MOUSE_MIDDLE);
@@ -343,6 +382,18 @@ static String executeAction(JsonObjectConst a) {
         if (!a["keys"].is<JsonArrayConst>()) return "key requires keys[]";
         JsonArrayConst arr = a["keys"].as<JsonArrayConst>();
         if (arr.size() == 0) return "keys[] empty";
+        // Media/consumer keys are standalone usages on a separate HID
+        // interface and cannot be chorded with keyboard modifiers. If the
+        // chord is a single token naming a consumer key, emit it that way.
+        if (arr.size() == 1) {
+            uint16_t usage;
+            if (resolveConsumerKey(String(arr[0].as<const char*>() ? arr[0].as<const char*>() : ""), usage)) {
+                ConsumerControl.press(usage);
+                delay(15);
+                ConsumerControl.release();
+                return "";
+            }
+        }
         // Press all then release all => chord
         std::vector<uint8_t> codes;
         for (JsonVariantConst v : arr) {
@@ -564,6 +615,7 @@ void setup() {
     stageBegin("HID");
     Keyboard.begin();
     Mouse.begin();
+    ConsumerControl.begin();
     // USB.begin() finalises TinyUSB descriptors and triggers host
     // enumeration. After this returns, Windows should see the dongle as a
     // composite USB device (CDC + HID Keyboard + HID Mouse).
